@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>ComfyUI 批量测试平台</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>ComfyUI 工作流批量测试平台</h1>
+    <div class="server-settings">
+      <label>
+        服务器地址
+        <input id="server-url" type="text" value="http://127.0.0.1:8189">
+      </label>
+      <label>
+        输出目录
+        <input id="output-dir" type="text" placeholder="默认使用 workflow_test_output">
+      </label>
+      <div class="header-actions">
+        <button id="test-server">测试连接</button>
+        <button id="refresh-groups">刷新工作流</button>
+      </div>
+    </div>
+  </header>
+  <main class="app-main">
+    <nav class="tab-bar">
+      <button class="tab-button active" data-tab="workflows">批量测试</button>
+      <button class="tab-button" data-tab="media">媒体素材管理</button>
+      <button class="tab-button" data-tab="results">运行结果</button>
+    </nav>
+    <section class="tab-content active" id="tab-workflows">
+      <div class="workflow-layout">
+        <section class="pane pane-groups">
+          <div class="workflow-tree-section">
+            <div class="workflow-tree-header">
+              <h2>工作流管理</h2>
+              <div class="workflow-tree-actions">
+                <button id="workflow-upload-btn" type="button">上传工作流</button>
+                <button id="workflow-rename-btn" type="button">重命名</button>
+                <button id="workflow-delete-btn" type="button">删除</button>
+                <button id="workflow-tree-refresh" type="button">刷新</button>
+              </div>
+              <input type="file" id="workflow-upload-input" accept=".json" multiple class="hidden">
+            </div>
+            <ul id="workflow-tree" class="workflow-tree"></ul>
+          </div>
+          <div class="workflow-groups-section">
+            <h2>工作流分组</h2>
+            <ul id="group-list" class="group-list"></ul>
+          </div>
+        </section>
+        <section class="pane pane-workflows">
+          <div class="workflow-header">
+            <h2 id="workflow-title">请选择分组</h2>
+            <button id="run-batch" disabled>开始批量测试</button>
+          </div>
+          <div class="workflow-content">
+            <div class="placeholder-panel">
+              <h3>占位符配置</h3>
+              <p id="placeholder-tip" class="placeholder-tip">选择分组后配置输入资源。</p>
+              <ul id="placeholder-list" class="placeholder-list"></ul>
+            </div>
+            <div class="workflow-panel">
+              <h3>工作流列表</h3>
+              <ul id="workflow-list" class="workflow-list"></ul>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section class="tab-content" id="tab-media">
+      <div class="pane pane-media">
+        <div class="media-header">
+          <h2>媒体素材管理</h2>
+          <div class="media-toolbar">
+            <button id="media-up">返回上级</button>
+            <span id="media-path"></span>
+          </div>
+        </div>
+        <div class="media-actions">
+          <form id="create-folder-form">
+            <input type="text" id="new-folder-name" placeholder="新建文件夹名称">
+            <button type="submit">创建</button>
+          </form>
+          <form id="upload-form">
+            <input type="file" id="upload-file" multiple>
+            <button type="submit">上传</button>
+          </form>
+        </div>
+        <div class="media-content">
+          <div class="media-columns">
+            <div class="media-column">
+              <h3>文件夹</h3>
+              <ul id="media-folders" class="media-list"></ul>
+            </div>
+            <div class="media-column">
+              <h3>文件</h3>
+              <ul id="media-files" class="media-list"></ul>
+            </div>
+          </div>
+          <div id="preview" class="media-preview hidden">
+            <h3>预览</h3>
+            <div id="preview-content"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="tab-content" id="tab-results">
+      <div class="pane pane-results">
+        <h2>批量运行结果</h2>
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>状态</th>
+              <th>数量</th>
+              <th>开始时间</th>
+              <th>结束时间</th>
+              <th>备注</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody id="results-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="overlay" class="modal-overlay hidden"></div>
+
+  <div id="media-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <div class="modal-title">
+        <h3>选择媒体 <span id="modal-placeholder"></span></h3>
+        <p id="modal-placeholder-type" class="modal-subtitle"></p>
+      </div>
+      <div class="modal-toolbar">
+        <button id="modal-upload-btn" type="button">本地上传</button>
+        <button type="button" class="modal-close" data-modal-close>&times;</button>
+        <input type="file" id="modal-upload-input" class="hidden" multiple accept="image/*,video/*">
+      </div>
+    </div>
+    <div class="modal-body">
+      <div id="modal-media-empty" class="modal-empty hidden">暂无可用媒体，请先在媒体素材管理页上传。</div>
+      <div id="modal-media-grid" class="modal-grid"></div>
+    </div>
+  </div>
+
+  <div id="results-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <h3>任务详情</h3>
+      <button type="button" class="modal-close" data-modal-close>&times;</button>
+    </div>
+    <div class="modal-body results-modal-body">
+      <div id="results-modal-content"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+  "server": "http://127.0.0.1:8189",
+  "output_dir": "workflow_test_output",
+  "workflows": [
+    {
+      "name": "pair_photo_polaroid",
+      "workflow_path": "workflow/image/人物合照-拍立得_api.json",
+      "inputs": {
+        "input_image_l": {
+          "path": "samples/photo_left.png"
+        },
+        "input_image_r": {
+          "path": "samples/photo_right.png"
+        }
+      },
+      "text_inputs": {
+        "⚙️ CR Prompt Text": {
+          "prompt": "两人置身复古拍立得风格，保持微笑，灯光温暖柔和。"
+        }
+      }
+    },
+    {
+      "name": "single_image_to_video",
+      "workflow_path": "workflow/video/鬼脸视频_api.json",
+      "inputs": {
+        "input_image": {
+          "path": "samples/base_frame.png"
+        }
+      }
+    },
+    {
+      "name": "double_image_to_video",
+      "workflow_path": "workflow/video/人物自然过渡变身_api.json",
+      "inputs": {
+        "input_image_l": {
+          "path": "samples/source_a.png"
+        },
+        "input_image_r": {
+          "path": "samples/source_b.png"
+        }
+      },
+      "overrides": {
+        "title:⚙️ CR Prompt Text": {
+          "inputs": {
+            "prompt": "提示词可在这里覆盖，适合整段剧本或镜头说明。"
+          }
+        }
+      }
+    }
+  ]
+}
