@@ -71,6 +71,7 @@ class DeleteMediaPayload(BaseModel):
 class DatasetRunOptions(BaseModel):
     server_url: Optional[str] = None
     convert_images_to_jpg: bool = True
+    append: bool = False
 
 
 class DatasetRunRequest(BaseModel):
@@ -271,7 +272,14 @@ def create_app() -> FastAPI:
         if metadata_path.exists():
             with metadata_path.open("r", encoding="utf-8") as handle:
                 metadata = json.load(handle)
-        return {"metadata": metadata, "pairs": pairs}
+        return {
+            "metadata": metadata,
+            "pairs": pairs,
+            "stats": {
+                "total_runs": metadata.get("total_runs", 0),
+                "controls": metadata.get("control_slots", {}),
+            },
+        }
 
     @app.delete("/api/datasets/{dataset_name}")
     async def delete_dataset(dataset_name: str) -> Dict[str, object]:
@@ -490,8 +498,19 @@ def execute_dataset_run(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据集名称不能为空")
     dataset_name = _sanitize_for_fs(dataset_name_raw)
     dataset_dir = DATASET_ROOT / dataset_name
-    if dataset_dir.exists() and any(dataset_dir.iterdir()):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="数据集已存在")
+    metadata_path = dataset_dir / "metadata.json"
+    dataset_exists = dataset_dir.exists() and any(dataset_dir.iterdir())
+    existing_metadata: Dict[str, object] = {}
+    if metadata_path.exists():
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            existing_metadata = json.load(handle)
+    if dataset_exists and not options.append:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="数据集已存在，请勾选追加或更换名称")
+
+    existing_placeholders: List[str] = list(existing_metadata.get("placeholder_map", {}).keys()) if existing_metadata else []
+    if dataset_exists and options.append:
+        if not existing_placeholders:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法识别已有数据集占位符映射")
 
     placeholder_map = payload.placeholders or {}
     if not placeholder_map:
@@ -505,12 +524,23 @@ def execute_dataset_run(
         normalized_order.append(normalized)
         placeholder_labels[normalized] = key
         normalized_map[normalized] = list(values)
+    if existing_placeholders:
+        if normalized_order != existing_placeholders:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="占位符与现有数据集不匹配")
 
     workflow_info = store.get_workflow(payload.workflow_id)
     if workflow_info is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到指定的工作流")
 
-    structure, control_slot_map = dataset_manager.ensure_structure(dataset_name, normalized_order or ["input_image"])
+    existing_control_map = existing_metadata.get("control_slots") if existing_metadata else None
+    if existing_metadata:
+        placeholder_labels = existing_metadata.get("placeholder_map", placeholder_labels)
+
+    structure, control_slot_map, last_index = dataset_manager.ensure_structure(
+        dataset_name,
+        normalized_order or ["input_image"],
+        existing_control_map,
+    )
     target_dir = structure["target"]
     server_url = options.server_url or DEFAULT_SERVER_URL
     client = ComfyAPIClient(server_url)
@@ -521,7 +551,8 @@ def execute_dataset_run(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="未生成任何运行批次")
 
     try:
-        for index, pair in enumerate(pairs, start=1):
+        for offset, pair in enumerate(pairs, start=1):
+            index = last_index + offset
             remote_mapping: Dict[str, str] = {}
             for placeholder in normalized_order:
                 slot_name = control_slot_map.get(placeholder, "control")
@@ -557,18 +588,26 @@ def execute_dataset_run(
         dataset_manager.remove_dataset(dataset_name)
         raise
 
+    existing_runs = existing_metadata.get("total_runs", 0)
+    # if existing_metadata.get("workflow_id") and existing_metadata.get("workflow_id") != workflow_info.identifier:
+    #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目标数据集对应的工作流不一致")
     metadata = {
         "dataset_name": dataset_name,
         "workflow_id": workflow_info.identifier,
         "workflow_path": str(workflow_info.path),
         "workflow_name": workflow_info.name,
-        "total_runs": total_runs,
+        "total_runs": existing_runs + total_runs,
         "placeholders": [placeholder_labels[p] for p in normalized_order],
         "placeholder_map": placeholder_labels,
         "control_slots": control_slot_map,
     }
     dataset_manager.save_metadata(dataset_name, metadata)
-    return {"dataset": dataset_name, "total_runs": total_runs}
+    return {
+        "dataset": dataset_name,
+        "total_runs": total_runs,
+        "previous_runs": existing_runs,
+        "total_count": existing_runs + total_runs,
+    }
 
 
 # ----------------------------------------------------------------- serializers

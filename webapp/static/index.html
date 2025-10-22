@@ -90,6 +90,16 @@
               数据集名称
               <input id="dataset-name" type="text" placeholder="例如: dataset_001">
             </label>
+            <label class="dataset-append-toggle">
+              <input id="dataset-append-toggle" type="checkbox">
+              追加到已有数据集
+            </label>
+            <label class="dataset-existing-label">
+              现有数据集
+              <select id="dataset-existing-select" disabled>
+                <option value="">请选择</option>
+              </select>
+            </label>
             <button id="dataset-run" disabled>开始创建</button>
           </div>
           <div id="dataset-placeholders" class="dataset-placeholder-list"></div>

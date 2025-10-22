@@ -16,7 +16,7 @@
    - `/api/test-server`：探测 ComfyUI 服务可达性；
    - `/api/run-batch`：校验分组与占位符后，**自动将所选图像/视频/音频上传至 ComfyUI**，并将返回的远端文件名缓存进任务；随后触发后台执行；
    - `/api/jobs/*` 与 `/api/jobs/{id}/artifacts/{artifact_id}`：查询任务状态、日志、占位符映射、产出物列表并下载图像/视频结果；
-   - `/api/dataset/workflows`、`/api/datasets/*`：支持数据集批量生成、列表、详情及删除（含单条输入/输出对的删除）。
+   - `/api/dataset/workflows`、`/api/datasets/*`：支持数据集批量生成、追加运行、列表、详情及删除（含单条输入/输出对的删除）。
    后台通过 `webapp/jobs.JobManager` 与新增的 `webapp/dataset_manager.DatasetManager` 维护批量任务及数据集产出物。
 
 4. **用户界面**  

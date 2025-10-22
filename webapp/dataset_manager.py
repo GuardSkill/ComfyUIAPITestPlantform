@@ -87,27 +87,47 @@ class DatasetManager:
                 result[key] = items[idx % len(items)]
             yield result
 
-    def ensure_structure(self, dataset_name: str, slots: List[str]) -> tuple[Dict[str, Path], Dict[str, str]]:
+    def ensure_structure(
+        self,
+        dataset_name: str,
+        slots: List[str],
+        existing_slots: Optional[Dict[str, str]] = None,
+    ) -> tuple[Dict[str, Path], Dict[str, str], int]:
         dataset_dir = self.ensure_dataset_dir(dataset_name)
         target_dir = dataset_dir / "target"
         target_dir.mkdir(parents=True, exist_ok=True)
         mapping: Dict[str, Path] = {"target": target_dir}
         control_slots: Dict[str, str] = {}
-        if len(slots) <= 1:
-            control_dir = dataset_dir / "control"
-            control_dir.mkdir(parents=True, exist_ok=True)
+        assigned = set()
+        if existing_slots:
+            for placeholder, slot_name in existing_slots.items():
+                control_slots[placeholder] = slot_name
+                control_dir = dataset_dir / slot_name
+                control_dir.mkdir(parents=True, exist_ok=True)
+                mapping[slot_name] = control_dir
+                assigned.add(placeholder)
+        if len(slots) <= 1 and not control_slots:
             slot_name = "control"
+            control_dir = dataset_dir / slot_name
+            control_dir.mkdir(parents=True, exist_ok=True)
             mapping[slot_name] = control_dir
             if slots:
                 control_slots[slots[0]] = slot_name
         else:
             for idx, placeholder in enumerate(slots, start=1):
+                if placeholder in control_slots:
+                    continue
                 slot_name = f"control{idx}"
+                while slot_name in mapping:
+                    idx += 1
+                    slot_name = f"control{idx}"
                 control_dir = dataset_dir / slot_name
                 control_dir.mkdir(parents=True, exist_ok=True)
                 control_slots[placeholder] = slot_name
                 mapping[slot_name] = control_dir
-        return mapping, control_slots
+        existing_indices = self._collect_existing_indices(dataset_dir)
+        last_index = max(existing_indices) if existing_indices else 0
+        return mapping, control_slots, last_index
 
     def save_control(self, folder: Path, index: int, source: Path, force_jpg: bool = True) -> Path:
         alias = f"{index:07d}"
@@ -187,6 +207,23 @@ class DatasetManager:
             slots[slot_name] = slot_files
             indices.update(slot_files.keys())
         return {"slots": slots, "combined_indices": indices}
+
+    def _collect_existing_indices(self, dataset_dir: Path) -> set[int]:
+        indices: set[int] = set()
+        for entry in dataset_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name != "target" and not entry.name.startswith("control"):
+                continue
+            for file in entry.iterdir():
+                if not file.is_file():
+                    continue
+                try:
+                    index = int(file.stem)
+                except ValueError:
+                    continue
+                indices.add(index)
+        return indices
 
     def _list_indexed_files(self, folder: Path) -> Dict[int, Dict[str, str]]:
         if not folder.exists() or not folder.is_dir():

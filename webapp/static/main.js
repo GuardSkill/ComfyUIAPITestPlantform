@@ -27,10 +27,13 @@ const state = {
     placeholders: [],
     placeholderSelections: {},
     datasetName: "",
+    newDatasetName: "",
     datasets: [],
     selectedDataset: null,
     datasetPairs: [],
     isRunning: false,
+    appendMode: false,
+    appendTarget: "",
   },
 };
 
@@ -76,6 +79,8 @@ const refs = {
   resultsModalContent: document.getElementById("results-modal-content"),
   datasetWorkflowSelect: document.getElementById("dataset-workflow"),
   datasetNameInput: document.getElementById("dataset-name"),
+  datasetAppendToggle: document.getElementById("dataset-append-toggle"),
+  datasetExistingSelect: document.getElementById("dataset-existing-select"),
   datasetRunButton: document.getElementById("dataset-run"),
   datasetPlaceholderContainer: document.getElementById("dataset-placeholders"),
   datasetRefreshButton: document.getElementById("dataset-refresh"),
@@ -779,6 +784,32 @@ function renderDatasetBuilder() {
   updateDatasetRunButton();
   if (refs.datasetNameInput) {
     refs.datasetNameInput.value = state.dataset.datasetName;
+    refs.datasetNameInput.disabled = state.dataset.appendMode;
+  }
+  if (refs.datasetAppendToggle) {
+    refs.datasetAppendToggle.checked = state.dataset.appendMode;
+  }
+  if (refs.datasetExistingSelect) {
+    refs.datasetExistingSelect.innerHTML = "";
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = state.dataset.appendMode ? "请选择" : "不可用";
+    refs.datasetExistingSelect.appendChild(defaultOption);
+    state.dataset.datasets.forEach((dataset) => {
+      const option = document.createElement("option");
+      option.value = dataset.name;
+      option.textContent = `${dataset.name} (${dataset.total_runs || 0} 条)`;
+      if (dataset.name === state.dataset.appendTarget) {
+        option.selected = true;
+      }
+      refs.datasetExistingSelect.appendChild(option);
+    });
+    refs.datasetExistingSelect.disabled = !state.dataset.appendMode;
+    if (!state.dataset.appendMode) {
+      refs.datasetExistingSelect.value = "";
+    } else if (state.dataset.appendTarget) {
+      refs.datasetExistingSelect.value = state.dataset.appendTarget;
+    }
   }
 }
 
@@ -910,7 +941,7 @@ function updateDatasetRunButton() {
   }
   const ready =
     !state.dataset.isRunning &&
-    state.dataset.datasetName &&
+    ((state.dataset.appendMode && state.dataset.appendTarget) || (!state.dataset.appendMode && state.dataset.datasetName)) &&
     state.dataset.selectedWorkflowId &&
     state.dataset.placeholders.every((placeholder) => {
       const key = normalizePlaceholderKey(placeholder.name);
@@ -925,16 +956,18 @@ async function runDataset() {
     showToast("请先选择工作流");
     return;
   }
-  if (!state.dataset.datasetName) {
-    showToast("请填写数据集名称");
+  const targetDatasetName = state.dataset.appendMode ? state.dataset.appendTarget : state.dataset.datasetName;
+  if (!targetDatasetName) {
+    showToast(state.dataset.appendMode ? "请选择需要追加的数据集" : "请填写数据集名称");
     return;
   }
   const payload = {
-    dataset_name: state.dataset.datasetName,
+    dataset_name: targetDatasetName,
     workflow_id: state.dataset.selectedWorkflowId,
     placeholders: {},
     options: {
       convert_images_to_jpg: true,
+      append: state.dataset.appendMode,
     },
   };
   state.dataset.placeholders.forEach((placeholder) => {
@@ -952,17 +985,25 @@ async function runDataset() {
   state.dataset.isRunning = true;
   updateDatasetRunButton();
   try {
+    showToast("正在创建数据集，请稍候...");
     const result = await fetchJSON("/api/datasets/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    showToast(`数据集 ${result.dataset} 创建完成，共 ${result.total_runs} 次运行`);
+    if (result.previous_runs > 0) {
+      showToast(`数据集 ${result.dataset} 追加 ${result.total_runs} 条，累计 ${result.total_count} 条`);
+    } else {
+      showToast(`数据集 ${result.dataset} 创建完成，共 ${result.total_runs} 条`);
+    }
     await loadDatasetsList();
     await viewDataset(result.dataset);
-    state.dataset.datasetName = "";
-    if (refs.datasetNameInput) {
-      refs.datasetNameInput.value = "";
+    if (!state.dataset.appendMode) {
+      state.dataset.datasetName = "";
+      state.dataset.newDatasetName = "";
+      if (refs.datasetNameInput) {
+        refs.datasetNameInput.value = "";
+      }
     }
   } catch (error) {
     showToast(`创建数据集失败：${error.message}`);
@@ -976,6 +1017,15 @@ async function loadDatasetsList() {
   try {
     const { datasets } = await fetchJSON("/api/datasets");
     state.dataset.datasets = datasets || [];
+    if (state.dataset.appendMode && !state.dataset.appendTarget) {
+      state.dataset.appendTarget = state.dataset.datasets.length ? state.dataset.datasets[0].name : "";
+      if (state.dataset.appendTarget) {
+        state.dataset.datasetName = state.dataset.appendTarget;
+        if (refs.datasetNameInput) {
+          refs.datasetNameInput.value = state.dataset.datasetName;
+        }
+      }
+    }
     renderDatasetList();
     if (state.dataset.selectedDataset?.dataset_name) {
       const name = state.dataset.selectedDataset.dataset_name;
@@ -985,6 +1035,7 @@ async function loadDatasetsList() {
         closeDatasetViewer();
       }
     }
+    renderDatasetBuilder();
   } catch (error) {
     showToast(`加载数据集失败：${error.message}`);
   }
@@ -1039,8 +1090,19 @@ async function viewDataset(datasetName) {
     state.dataset.selectedDataset = metadata;
     if (state.dataset.selectedDataset) {
       state.dataset.selectedDataset.dataset_name = state.dataset.selectedDataset.dataset_name || datasetName;
+      if (state.dataset.appendMode && state.dataset.selectedDataset.workflow_id) {
+        state.dataset.selectedWorkflowId = state.dataset.selectedDataset.workflow_id;
+        setDatasetWorkflow(state.dataset.selectedWorkflowId);
+      }
     }
     state.dataset.datasetPairs = pairs || [];
+    if (state.dataset.appendMode) {
+      state.dataset.appendTarget = datasetName;
+      state.dataset.datasetName = datasetName;
+      if (refs.datasetNameInput) {
+        refs.datasetNameInput.value = datasetName;
+      }
+    }
     renderDatasetViewer(datasetName);
   } catch (error) {
     showToast(`加载数据集详情失败：${error.message}`);
@@ -1054,6 +1116,18 @@ function renderDatasetViewer(datasetName) {
   refs.datasetViewer.classList.remove("hidden");
   refs.datasetViewerTitle.textContent = `数据集：${datasetName}`;
   refs.datasetViewerContent.innerHTML = "";
+  const metadata = state.dataset.selectedDataset || {};
+  const totalRuns = metadata.total_runs || metadata.totalCount || 0;
+  const summary = document.createElement("p");
+  summary.className = "dataset-empty";
+  summary.textContent = `累计 ${totalRuns} 条数据`; 
+  refs.datasetViewerContent.appendChild(summary);
+  const placeholderLabels = metadata.placeholder_map || {};
+  const controlSlots = metadata.control_slots || {};
+  const slotLabelMap = {};
+  Object.entries(controlSlots).forEach(([placeholderKey, slotName]) => {
+    slotLabelMap[slotName] = placeholderLabels[placeholderKey] || placeholderKey;
+  });
   if (!state.dataset.datasetPairs.length) {
     const empty = document.createElement("p");
     empty.className = "dataset-empty";
@@ -1061,13 +1135,6 @@ function renderDatasetViewer(datasetName) {
     refs.datasetViewerContent.appendChild(empty);
     return;
   }
-  const metadata = state.dataset.selectedDataset || {};
-  const placeholderLabels = metadata.placeholder_map || {};
-  const controlSlots = metadata.control_slots || {};
-  const slotLabelMap = {};
-  Object.entries(controlSlots).forEach(([placeholderKey, slotName]) => {
-    slotLabelMap[slotName] = placeholderLabels[placeholderKey] || placeholderKey;
-  });
   state.dataset.datasetPairs.forEach((pair) => {
     const card = document.createElement("div");
     card.className = "dataset-pair-card";
@@ -1894,6 +1961,9 @@ function setupEventListeners() {
 
   refs.datasetNameInput?.addEventListener("input", (event) => {
     state.dataset.datasetName = event.target.value.trim();
+    if (!state.dataset.appendMode) {
+      state.dataset.newDatasetName = state.dataset.datasetName;
+    }
     updateDatasetRunButton();
   });
 
@@ -1923,6 +1993,53 @@ function setupEventListeners() {
 
   refs.datasetNameInput?.addEventListener("input", (event) => {
     state.dataset.datasetName = event.target.value.trim();
+    updateDatasetRunButton();
+  });
+
+  refs.datasetAppendToggle?.addEventListener("change", (event) => {
+    const checked = Boolean(event.target.checked);
+    state.dataset.appendMode = checked;
+    if (checked) {
+      state.dataset.newDatasetName = state.dataset.datasetName;
+      if (refs.datasetExistingSelect) {
+        refs.datasetExistingSelect.disabled = false;
+        if (!state.dataset.appendTarget) {
+          const first = state.dataset.datasets[0]?.name;
+          state.dataset.appendTarget = first || "";
+          if (first) {
+            refs.datasetExistingSelect.value = first;
+          }
+        }
+      }
+      if (state.dataset.appendTarget) {
+        state.dataset.datasetName = state.dataset.appendTarget;
+        if (refs.datasetNameInput) {
+          refs.datasetNameInput.value = state.dataset.datasetName;
+        }
+      }
+    } else {
+      state.dataset.appendTarget = "";
+      if (refs.datasetExistingSelect) {
+        refs.datasetExistingSelect.disabled = true;
+        refs.datasetExistingSelect.value = "";
+      }
+      state.dataset.datasetName = state.dataset.newDatasetName || "";
+      if (refs.datasetNameInput) {
+        refs.datasetNameInput.value = state.dataset.datasetName;
+      }
+    }
+    updateDatasetRunButton();
+    renderDatasetBuilder();
+  });
+
+  refs.datasetExistingSelect?.addEventListener("change", (event) => {
+    state.dataset.appendTarget = event.target.value;
+    if (state.dataset.appendMode && state.dataset.appendTarget) {
+      state.dataset.datasetName = state.dataset.appendTarget;
+      if (refs.datasetNameInput) {
+        refs.datasetNameInput.value = state.dataset.appendTarget;
+      }
+    }
     updateDatasetRunButton();
   });
 

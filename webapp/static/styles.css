@@ -751,6 +751,27 @@ button[disabled] {
   font-size: 13px;
 }
 
+.dataset-append-toggle {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.dataset-existing-label select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #ccd3e5;
+  min-width: 180px;
+}
+
+.dataset-existing-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
 .dataset-form-row input,
 .dataset-form-row select {
   padding: 6px 8px;
