@@ -16,6 +16,22 @@ const state = {
   treeActivePath: null,
   treeWorkflowIds: new Set(),
   previewEntryPath: null,
+  modalContext: {
+    mode: "workflow",
+    placeholder: null,
+    multi: false,
+  },
+  dataset: {
+    workflows: [],
+    selectedWorkflowId: null,
+    placeholders: [],
+    placeholderSelections: {},
+    datasetName: "",
+    datasets: [],
+    selectedDataset: null,
+    datasetPairs: [],
+    isRunning: false,
+  },
 };
 
 const MODAL_EMPTY_TEXT = "暂无可用媒体，请先在媒体素材管理页上传。";
@@ -58,6 +74,16 @@ const refs = {
   modalUploadInput: document.getElementById("modal-upload-input"),
   resultsModal: document.getElementById("results-modal"),
   resultsModalContent: document.getElementById("results-modal-content"),
+  datasetWorkflowSelect: document.getElementById("dataset-workflow"),
+  datasetNameInput: document.getElementById("dataset-name"),
+  datasetRunButton: document.getElementById("dataset-run"),
+  datasetPlaceholderContainer: document.getElementById("dataset-placeholders"),
+  datasetRefreshButton: document.getElementById("dataset-refresh"),
+  datasetList: document.getElementById("dataset-list"),
+  datasetViewer: document.getElementById("dataset-viewer"),
+  datasetViewerTitle: document.getElementById("dataset-viewer-title"),
+  datasetViewerClose: document.getElementById("dataset-viewer-close"),
+  datasetViewerContent: document.getElementById("dataset-viewer-content"),
   workflowTree: document.getElementById("workflow-tree"),
   workflowUploadInput: document.getElementById("workflow-upload-input"),
   workflowUploadButton: document.getElementById("workflow-upload-btn"),
@@ -129,6 +155,19 @@ function resolveMediaUrl(entry) {
   }
   const raw = entry.url || `/media/${entry.path.replace(/\\/g, "/")}`;
   return encodeURI(raw);
+}
+
+function normalizePlaceholderKey(name) {
+  const bare = (name || "").replace(/^\{|\}$/g, "");
+  return `{${bare}}`;
+}
+
+function isImagePath(path) {
+  return /\.(png|jpe?g|webp|bmp|gif|tif?f)$/i.test(path || "");
+}
+
+function isVideoPath(path) {
+  return /\.(mp4|mov|avi|mkv|webm)$/i.test(path || "");
 }
 
 function extractErrorDetail(raw) {
@@ -710,8 +749,430 @@ function renderMedia(listing) {
 
     row.appendChild(actions);
     item.appendChild(row);
-    refs.mediaFiles.appendChild(item);
+  refs.mediaFiles.appendChild(item);
   });
+}
+
+async function loadDatasetWorkflows() {
+  try {
+    const { workflows } = await fetchJSON("/api/dataset/workflows");
+    const previous = state.dataset.selectedWorkflowId;
+    state.dataset.workflows = workflows || [];
+    if (!state.dataset.workflows.length) {
+      state.dataset.selectedWorkflowId = null;
+      state.dataset.placeholders = [];
+      state.dataset.placeholderSelections = {};
+    } else if (!previous || !state.dataset.workflows.some((item) => item.id === previous)) {
+      state.dataset.selectedWorkflowId = state.dataset.workflows[0].id;
+      state.dataset.placeholders = state.dataset.workflows[0].placeholders || [];
+      state.dataset.placeholderSelections = {};
+    }
+    renderDatasetBuilder();
+  } catch (error) {
+    showToast(`加载数据集工作流失败：${error.message}`);
+  }
+}
+
+function renderDatasetBuilder() {
+  renderDatasetWorkflowOptions();
+  renderDatasetPlaceholderList();
+  updateDatasetRunButton();
+  if (refs.datasetNameInput) {
+    refs.datasetNameInput.value = state.dataset.datasetName;
+  }
+}
+
+function renderDatasetWorkflowOptions() {
+  if (!refs.datasetWorkflowSelect) {
+    return;
+  }
+  refs.datasetWorkflowSelect.innerHTML = "";
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "请选择需要批量运行的工作流";
+  refs.datasetWorkflowSelect.appendChild(defaultOption);
+  state.dataset.workflows.forEach((workflow) => {
+    const option = document.createElement("option");
+    option.value = workflow.id;
+    option.textContent = workflow.name;
+    if (workflow.id === state.dataset.selectedWorkflowId) {
+      option.selected = true;
+    }
+    refs.datasetWorkflowSelect.appendChild(option);
+  });
+  refs.datasetWorkflowSelect.value = state.dataset.selectedWorkflowId || "";
+}
+
+function setDatasetWorkflow(workflowId) {
+  state.dataset.selectedWorkflowId = workflowId || null;
+  const workflow = state.dataset.workflows.find((item) => item.id === workflowId);
+  if (workflow) {
+    state.dataset.placeholders = workflow.placeholders || [];
+    const selections = {};
+    state.dataset.placeholders.forEach((placeholder) => {
+      const key = normalizePlaceholderKey(placeholder.name);
+      selections[key] = state.dataset.placeholderSelections[key] || [];
+    });
+    state.dataset.placeholderSelections = selections;
+  } else {
+    state.dataset.placeholders = [];
+    state.dataset.placeholderSelections = {};
+  }
+  renderDatasetBuilder();
+}
+
+function renderDatasetPlaceholderList() {
+  if (!refs.datasetPlaceholderContainer) {
+    return;
+  }
+  refs.datasetPlaceholderContainer.innerHTML = "";
+  if (!state.dataset.selectedWorkflowId) {
+    const hint = document.createElement("p");
+    hint.className = "dataset-empty";
+    hint.textContent = "请选择一个工作流以配置输入素材。";
+    refs.datasetPlaceholderContainer.appendChild(hint);
+    return;
+  }
+  if (!state.dataset.placeholders.length) {
+    const hint = document.createElement("p");
+    hint.className = "dataset-empty";
+    hint.textContent = "该工作流未检测到可替换的输入。";
+    refs.datasetPlaceholderContainer.appendChild(hint);
+    return;
+  }
+  state.dataset.placeholders.forEach((placeholder) => {
+    const key = normalizePlaceholderKey(placeholder.name);
+    if (!state.dataset.placeholderSelections[key]) {
+      state.dataset.placeholderSelections[key] = [];
+    }
+  });
+  state.dataset.placeholders.forEach((placeholder) => {
+    const key = normalizePlaceholderKey(placeholder.name);
+    const selections = state.dataset.placeholderSelections[key] || [];
+    const card = document.createElement("div");
+    card.className = "dataset-placeholder-card";
+    card.dataset.placeholder = key;
+
+    const header = document.createElement("div");
+    header.className = "dataset-placeholder-header";
+    const title = document.createElement("div");
+    title.innerHTML = `<strong>${placeholder.display || placeholder.name}</strong><span>${formatMediaTypeLabel(placeholder.type)} · 已选 ${selections.length} 项</span>`;
+    header.appendChild(title);
+    const actions = document.createElement("div");
+    actions.className = "dataset-placeholder-actions";
+    const selectBtn = document.createElement("button");
+    selectBtn.type = "button";
+    selectBtn.textContent = "选择素材";
+    selectBtn.dataset.action = "select";
+    selectBtn.dataset.placeholder = key;
+    selectBtn.dataset.type = placeholder.type || "";
+    selectBtn.dataset.display = placeholder.display || placeholder.name;
+    actions.appendChild(selectBtn);
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.textContent = "清空";
+    clearBtn.dataset.action = "clear";
+    clearBtn.dataset.placeholder = key;
+    actions.appendChild(clearBtn);
+    header.appendChild(actions);
+    card.appendChild(header);
+
+    const list = document.createElement("div");
+    list.className = "dataset-selected-list";
+    if (!selections.length) {
+      const empty = document.createElement("span");
+      empty.className = "dataset-empty";
+      empty.textContent = "尚未选择素材";
+      list.appendChild(empty);
+    } else {
+      selections.forEach((item, index) => {
+        const chip = document.createElement("span");
+        chip.className = "dataset-selected-item";
+        chip.textContent = item.name;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "移除";
+        remove.dataset.action = "remove";
+        remove.dataset.placeholder = key;
+        remove.dataset.index = String(index);
+        chip.appendChild(remove);
+        list.appendChild(chip);
+      });
+    }
+    card.appendChild(list);
+    refs.datasetPlaceholderContainer.appendChild(card);
+  });
+}
+
+function updateDatasetRunButton() {
+  if (!refs.datasetRunButton) {
+    return;
+  }
+  const ready =
+    !state.dataset.isRunning &&
+    state.dataset.datasetName &&
+    state.dataset.selectedWorkflowId &&
+    state.dataset.placeholders.every((placeholder) => {
+      const key = normalizePlaceholderKey(placeholder.name);
+      return (state.dataset.placeholderSelections[key] || []).length > 0;
+    });
+  refs.datasetRunButton.disabled = !ready;
+  refs.datasetRunButton.textContent = state.dataset.isRunning ? "创建中..." : "开始创建";
+}
+
+async function runDataset() {
+  if (!state.dataset.selectedWorkflowId) {
+    showToast("请先选择工作流");
+    return;
+  }
+  if (!state.dataset.datasetName) {
+    showToast("请填写数据集名称");
+    return;
+  }
+  const payload = {
+    dataset_name: state.dataset.datasetName,
+    workflow_id: state.dataset.selectedWorkflowId,
+    placeholders: {},
+    options: {
+      convert_images_to_jpg: true,
+    },
+  };
+  state.dataset.placeholders.forEach((placeholder) => {
+    const key = normalizePlaceholderKey(placeholder.name);
+    const selections = state.dataset.placeholderSelections[key] || [];
+    if (!selections.length) {
+      return;
+    }
+    payload.placeholders[key] = selections.map((item) => item.path);
+  });
+  if (!Object.keys(payload.placeholders).length) {
+    showToast("请为每个输入占位符选择至少一个素材");
+    return;
+  }
+  state.dataset.isRunning = true;
+  updateDatasetRunButton();
+  try {
+    const result = await fetchJSON("/api/datasets/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    showToast(`数据集 ${result.dataset} 创建完成，共 ${result.total_runs} 次运行`);
+    await loadDatasetsList();
+    await viewDataset(result.dataset);
+    state.dataset.datasetName = "";
+    if (refs.datasetNameInput) {
+      refs.datasetNameInput.value = "";
+    }
+  } catch (error) {
+    showToast(`创建数据集失败：${error.message}`);
+  } finally {
+    state.dataset.isRunning = false;
+    updateDatasetRunButton();
+  }
+}
+
+async function loadDatasetsList() {
+  try {
+    const { datasets } = await fetchJSON("/api/datasets");
+    state.dataset.datasets = datasets || [];
+    renderDatasetList();
+    if (state.dataset.selectedDataset?.dataset_name) {
+      const name = state.dataset.selectedDataset.dataset_name;
+      if (state.dataset.datasets.some((item) => item.name === name)) {
+        await viewDataset(name);
+      } else {
+        closeDatasetViewer();
+      }
+    }
+  } catch (error) {
+    showToast(`加载数据集失败：${error.message}`);
+  }
+}
+
+function renderDatasetList() {
+  if (!refs.datasetList) {
+    return;
+  }
+  refs.datasetList.innerHTML = "";
+  if (!state.dataset.datasets.length) {
+    const empty = document.createElement("li");
+    empty.className = "dataset-empty";
+    empty.textContent = "暂无数据集，请先创建。";
+    refs.datasetList.appendChild(empty);
+    return;
+  }
+  state.dataset.datasets.forEach((dataset) => {
+    const item = document.createElement("li");
+    if (state.dataset.selectedDataset?.dataset_name === dataset.name) {
+      item.classList.add("active");
+    }
+    const info = document.createElement("div");
+    info.innerHTML = `<strong>${dataset.name}</strong><span>${dataset.total_runs || 0} 次运行</span>`;
+    info.style.display = "flex";
+    info.style.flexDirection = "column";
+    info.style.gap = "4px";
+    item.appendChild(info);
+
+    const actions = document.createElement("div");
+    actions.className = "dataset-list-actions";
+    const viewBtn = document.createElement("button");
+    viewBtn.type = "button";
+    viewBtn.textContent = "查看";
+    viewBtn.dataset.action = "view";
+    viewBtn.dataset.name = dataset.name;
+    actions.appendChild(viewBtn);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.textContent = "删除";
+    deleteBtn.dataset.action = "delete";
+    deleteBtn.dataset.name = dataset.name;
+    actions.appendChild(deleteBtn);
+    item.appendChild(actions);
+    refs.datasetList.appendChild(item);
+  });
+}
+
+async function viewDataset(datasetName) {
+  try {
+    const { metadata, pairs } = await fetchJSON(`/api/datasets/${encodeURIComponent(datasetName)}`);
+    state.dataset.selectedDataset = metadata;
+    if (state.dataset.selectedDataset) {
+      state.dataset.selectedDataset.dataset_name = state.dataset.selectedDataset.dataset_name || datasetName;
+    }
+    state.dataset.datasetPairs = pairs || [];
+    renderDatasetViewer(datasetName);
+  } catch (error) {
+    showToast(`加载数据集详情失败：${error.message}`);
+  }
+}
+
+function renderDatasetViewer(datasetName) {
+  if (!refs.datasetViewer || !refs.datasetViewerContent) {
+    return;
+  }
+  refs.datasetViewer.classList.remove("hidden");
+  refs.datasetViewerTitle.textContent = `数据集：${datasetName}`;
+  refs.datasetViewerContent.innerHTML = "";
+  if (!state.dataset.datasetPairs.length) {
+    const empty = document.createElement("p");
+    empty.className = "dataset-empty";
+    empty.textContent = "暂时没有数据对。";
+    refs.datasetViewerContent.appendChild(empty);
+    return;
+  }
+  const metadata = state.dataset.selectedDataset || {};
+  const placeholderLabels = metadata.placeholder_map || {};
+  const controlSlots = metadata.control_slots || {};
+  const slotLabelMap = {};
+  Object.entries(controlSlots).forEach(([placeholderKey, slotName]) => {
+    slotLabelMap[slotName] = placeholderLabels[placeholderKey] || placeholderKey;
+  });
+  state.dataset.datasetPairs.forEach((pair) => {
+    const card = document.createElement("div");
+    card.className = "dataset-pair-card";
+    const header = document.createElement("div");
+    header.className = "dataset-pair-header";
+    header.innerHTML = `<strong>#${String(pair.index).padStart(3, "0")}</strong>`;
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.textContent = "删除";
+    deleteBtn.dataset.action = "delete-pair";
+    deleteBtn.dataset.index = pair.index;
+    deleteBtn.dataset.dataset = datasetName;
+    header.appendChild(deleteBtn);
+    card.appendChild(header);
+
+    const mediaRow = document.createElement("div");
+    mediaRow.className = "dataset-pair-media";
+    Object.entries(pair.controls || {}).forEach(([slot, entry]) => {
+      const label = slotLabelMap[slot] || slot;
+      mediaRow.appendChild(createDatasetMediaThumb(entry, label));
+    });
+    if (pair.target) {
+      mediaRow.appendChild(createDatasetMediaThumb(pair.target, "target"));
+    }
+    card.appendChild(mediaRow);
+    refs.datasetViewerContent.appendChild(card);
+  });
+}
+
+function createDatasetMediaThumb(entry, label) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "dataset-media-thumb";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  wrapper.appendChild(caption);
+  if (!entry) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "placeholder";
+    placeholder.textContent = "无文件";
+    wrapper.appendChild(placeholder);
+    return wrapper;
+  }
+  const url = entry.url ? encodeURI(entry.url) : `/datasets/${entry.path}`;
+  if (isImagePath(entry.path || entry.name)) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = entry.name;
+    link.appendChild(img);
+    wrapper.appendChild(link);
+  } else if (isVideoPath(entry.path || entry.name)) {
+    const video = document.createElement("video");
+    video.src = url;
+    video.controls = true;
+    video.loop = true;
+    video.preload = "metadata";
+    wrapper.appendChild(video);
+  } else {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.textContent = entry.name;
+    wrapper.appendChild(link);
+  }
+  return wrapper;
+}
+
+async function deleteDataset(name) {
+  if (!confirm(`确认删除数据集 ${name} 吗？该操作不可恢复。`)) {
+    return;
+  }
+  try {
+    await fetchJSON(`/api/datasets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    showToast("数据集已删除");
+    if (state.dataset.selectedDataset?.dataset_name === name) {
+      closeDatasetViewer();
+    }
+    await loadDatasetsList();
+  } catch (error) {
+    showToast(`删除数据集失败：${error.message}`);
+  }
+}
+
+async function deleteDatasetPairRequest(name, index) {
+  try {
+    await fetchJSON(`/api/datasets/${encodeURIComponent(name)}/pair/${index}`, { method: "DELETE" });
+    showToast("已删除该数据对");
+    await viewDataset(name);
+  } catch (error) {
+    showToast(`删除失败：${error.message}`);
+  }
+}
+
+function closeDatasetViewer() {
+  if (refs.datasetViewer) {
+    refs.datasetViewer.classList.add("hidden");
+  }
+  if (refs.datasetViewerContent) {
+    refs.datasetViewerContent.innerHTML = "";
+  }
+  state.dataset.selectedDataset = null;
+  state.dataset.datasetPairs = [];
+  renderDatasetList();
 }
 
 function renderPreview(entry) {
@@ -759,8 +1220,17 @@ async function promptRename(entry) {
   }
 }
 
-function openMediaModal(placeholderName, placeholderType) {
-  state.currentPlaceholder = placeholderName;
+function openMediaModal(placeholderName, placeholderType, context = {}) {
+  state.modalContext = {
+    mode: context.mode || "workflow",
+    placeholder: placeholderName,
+    multi: Boolean(context.multi),
+  };
+  if (state.modalContext.mode === "workflow") {
+    state.currentPlaceholder = placeholderName;
+  } else {
+    state.currentPlaceholder = null;
+  }
   state.modalPlaceholderType = placeholderType || null;
   refs.modalPlaceholder.textContent = `（${placeholderName}）`;
   const subtitle = formatMediaTypeLabel(placeholderType);
@@ -776,6 +1246,7 @@ function openMediaModal(placeholderName, placeholderType) {
 function closeMediaModal() {
   state.currentPlaceholder = null;
   state.modalPlaceholderType = null;
+  state.modalContext = { mode: "workflow", placeholder: null, multi: false };
   refs.modalPlaceholderType.textContent = "";
   refs.mediaModal.classList.add("hidden");
   updateOverlayVisibility();
@@ -806,13 +1277,22 @@ function renderModalMedia(files) {
     return;
   }
   refs.modalMediaEmpty.classList.add("hidden");
+  const context = state.modalContext;
+  let selectedPaths = new Set();
+  if (context?.mode === "dataset" && context.placeholder) {
+    const key = normalizePlaceholderKey(context.placeholder);
+    const selections = state.dataset.placeholderSelections[key] || [];
+    selectedPaths = new Set(selections.map((item) => item.path));
+  }
   const currentValue = state.currentPlaceholder ? state.assignments[state.currentPlaceholder] : null;
   files.forEach((entry) => {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "media-card";
     card.title = entry.path;
-    if (currentValue === entry.path) {
+    if (context?.mode === "dataset" && selectedPaths.has(entry.path)) {
+      card.classList.add("selected");
+    } else if (context?.mode !== "dataset" && currentValue === entry.path) {
       card.classList.add("selected");
     }
 
@@ -860,6 +1340,33 @@ function renderModalMedia(files) {
 }
 
 function handleModalFileSelect(entry) {
+  const context = state.modalContext;
+  if (!context || !context.placeholder) {
+    return;
+  }
+  if (context.mode === "dataset") {
+    const key = normalizePlaceholderKey(context.placeholder);
+    const selections = state.dataset.placeholderSelections[key] || [];
+    const existingIndex = selections.findIndex((item) => item.path === entry.path);
+    if (existingIndex >= 0) {
+      selections.splice(existingIndex, 1);
+      showToast(`已移除 ${entry.name}`);
+    } else {
+      selections.push({
+        name: entry.name,
+        path: entry.path,
+        mime_type: entry.mime_type,
+        media_type: entry.media_type,
+        url: resolveMediaUrl(entry),
+      });
+      showToast(`已添加 ${entry.name}`);
+    }
+    state.dataset.placeholderSelections[key] = selections;
+    renderDatasetPlaceholderList();
+    updateDatasetRunButton();
+    loadModalMedia();
+    return;
+  }
   if (!state.currentPlaceholder) {
     return;
   }
@@ -1365,6 +1872,10 @@ function switchTab(tabId) {
 
   if (tabId === "media") {
     loadMediaTab();
+  } else if (tabId === "dataset") {
+    loadDatasetWorkflows();
+    loadDatasetsList();
+    renderDatasetBuilder();
   }
 }
 
@@ -1376,6 +1887,15 @@ function setupEventListeners() {
     Promise.all([loadGroups(), loadWorkflowTree()]);
   });
   refs.testServer.addEventListener("click", testServerConnection);
+
+  refs.datasetWorkflowSelect?.addEventListener("change", (event) => {
+    setDatasetWorkflow(event.target.value);
+  });
+
+  refs.datasetNameInput?.addEventListener("input", (event) => {
+    state.dataset.datasetName = event.target.value.trim();
+    updateDatasetRunButton();
+  });
 
   refs.workflowUploadButton?.addEventListener("click", () => {
     refs.workflowUploadInput?.click();
@@ -1395,6 +1915,20 @@ function setupEventListeners() {
 
   refs.workflowSelectAllButton?.addEventListener("click", () => {
     selectAllTreeWorkflows();
+  });
+
+  refs.datasetWorkflowSelect?.addEventListener("change", (event) => {
+    setDatasetWorkflow(event.target.value);
+  });
+
+  refs.datasetNameInput?.addEventListener("input", (event) => {
+    state.dataset.datasetName = event.target.value.trim();
+    updateDatasetRunButton();
+  });
+
+  refs.datasetRunButton?.addEventListener("click", runDataset);
+  refs.datasetRefreshButton?.addEventListener("click", () => {
+    loadDatasetsList();
   });
 
   refs.modalUploadButton?.addEventListener("click", () => {
@@ -1425,6 +1959,76 @@ function setupEventListeners() {
 
   refs.workflowTreeRefresh?.addEventListener("click", () => {
     loadWorkflowTree();
+  });
+
+  refs.datasetRunButton?.addEventListener("click", runDataset);
+  refs.datasetRefreshButton?.addEventListener("click", () => {
+    loadDatasetsList();
+  });
+
+  refs.datasetViewerClose?.addEventListener("click", () => {
+    closeDatasetViewer();
+  });
+
+  refs.datasetPlaceholderContainer?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) {
+      return;
+    }
+    const placeholder = button.dataset.placeholder;
+    if (!placeholder) {
+      return;
+    }
+    if (button.dataset.action === "select") {
+      openMediaModal(placeholder, button.dataset.type || "", { mode: "dataset", multi: true });
+    } else if (button.dataset.action === "clear") {
+      state.dataset.placeholderSelections[placeholder] = [];
+      renderDatasetPlaceholderList();
+      updateDatasetRunButton();
+      showToast("已清空选择");
+    } else if (button.dataset.action === "remove") {
+      const index = Number(button.dataset.index);
+      const selections = state.dataset.placeholderSelections[placeholder] || [];
+      if (!Number.isNaN(index) && selections[index]) {
+        selections.splice(index, 1);
+        state.dataset.placeholderSelections[placeholder] = selections;
+        renderDatasetPlaceholderList();
+        updateDatasetRunButton();
+        showToast("已移除素材");
+      }
+    }
+  });
+
+  refs.datasetList?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+    const datasetName = button.dataset.name;
+    if (!datasetName) {
+      return;
+    }
+    if (button.dataset.action === "view") {
+      viewDataset(datasetName);
+    } else if (button.dataset.action === "delete") {
+      deleteDataset(datasetName);
+    }
+  });
+
+  refs.datasetViewerContent?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+    if (button.dataset.action === "delete-pair") {
+      const datasetName = button.dataset.dataset;
+      const index = Number(button.dataset.index);
+      if (datasetName && !Number.isNaN(index)) {
+        if (confirm(`确认删除编号 ${String(index).padStart(3, "0")} 的数据对吗？`)) {
+          deleteDatasetPairRequest(datasetName, index);
+        }
+      }
+    }
   });
 
   refs.uploadForm.addEventListener("submit", async (event) => {
@@ -1516,8 +2120,8 @@ function startPolling() {
 
 async function bootstrap() {
   setupEventListeners();
-  await loadGroups();
-  await loadWorkflowTree();
+  await Promise.all([loadGroups(), loadWorkflowTree(), loadDatasetWorkflows(), loadDatasetsList()]);
+  renderDatasetBuilder();
   switchTab("workflows");
   startPolling();
 }

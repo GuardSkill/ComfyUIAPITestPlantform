@@ -15,14 +15,16 @@
    - `/api/media`、`/api/media/all`、`/api/media/*`：媒体目录 CRUD + 全局素材列表；
    - `/api/test-server`：探测 ComfyUI 服务可达性；
    - `/api/run-batch`：校验分组与占位符后，**自动将所选图像/视频/音频上传至 ComfyUI**，并将返回的远端文件名缓存进任务；随后触发后台执行；
-   - `/api/jobs/*` 与 `/api/jobs/{id}/artifacts/{artifact_id}`：查询任务状态、日志、占位符映射、产出物列表并下载图像/视频结果。
-   后台通过 `webapp/jobs.JobManager` 维护任务队列、时间戳、上传映射、产出物清单与执行日志。
+   - `/api/jobs/*` 与 `/api/jobs/{id}/artifacts/{artifact_id}`：查询任务状态、日志、占位符映射、产出物列表并下载图像/视频结果；
+   - `/api/dataset/workflows`、`/api/datasets/*`：支持数据集批量生成、列表、详情及删除（含单条输入/输出对的删除）。
+   后台通过 `webapp/jobs.JobManager` 与新增的 `webapp/dataset_manager.DatasetManager` 维护批量任务及数据集产出物。
 
 4. **用户界面**  
    `webapp/static/index.html` + `main.js` + `styles.css` 构成单页应用：
    - “工作流管理”树：自动拉取 `workflow/` 目录，可批量上传（时间戳子目录）、重命名、删除、目录/文件多选，并与分组选择联动；
    - “批量测试”面板：分组列表、占位符配置、工作流勾选、服务器连通性测试；
-   - “媒体素材管理”分页：目录浏览、上传、预览；
+   - “数据集制作”分页：选择工作流、多选输入素材、批量运行生成 `datasets/` 目录，并提供数据集列表、对比预览及删除；
+   - “媒体素材管理”分页：目录浏览、上传、预览、删除；
    - “运行结果”分页：轮询 `/api/jobs` 展示执行状态、错误详情、日志及按工作流分组的图像/视频预览；
    - 媒体选择弹窗支持本地上传 + 缩略图预览，并按占位符类型过滤候选素材。
 

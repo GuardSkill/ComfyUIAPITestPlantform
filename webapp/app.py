@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, UploadFile, status
@@ -19,8 +20,19 @@ from batch_workflow_tester import (
     BatchWorkflowTester,
     ComfyAPIClient,
     WorkflowTestCase,
+    _replace_placeholders,
+    _sanitize_for_fs,
 )
-from .config import DEFAULT_OUTPUT_ROOT, DEFAULT_SERVER_URL, MEDIA_ROOT, WORKFLOW_ROOT, ensure_media_root
+from .config import (
+    DATASET_ROOT,
+    DEFAULT_OUTPUT_ROOT,
+    DEFAULT_SERVER_URL,
+    MEDIA_ROOT,
+    WORKFLOW_ROOT,
+    ensure_dataset_root,
+    ensure_media_root,
+)
+from .dataset_manager import DatasetManager
 from .jobs import JobManager
 from .media_manager import MediaEntry, MediaManager
 from .workflow_manager import WorkflowManager
@@ -56,6 +68,18 @@ class DeleteMediaPayload(BaseModel):
     paths: List[str] = Field(..., description="需要删除的媒体文件或文件夹路径列表，相对于 media 根目录")
 
 
+class DatasetRunOptions(BaseModel):
+    server_url: Optional[str] = None
+    convert_images_to_jpg: bool = True
+
+
+class DatasetRunRequest(BaseModel):
+    dataset_name: str
+    workflow_id: str
+    placeholders: Dict[str, List[str]]
+    options: Optional[DatasetRunOptions] = None
+
+
 class RunBatchPayload(BaseModel):
     group_id: str = Field(..., description="工作流分组标识")
     workflow_ids: List[str] = Field(..., description="要批量执行的工作流id列表")
@@ -70,6 +94,7 @@ class ServerTestPayload(BaseModel):
 
 def create_app() -> FastAPI:
     ensure_media_root()
+    ensure_dataset_root()
     app = FastAPI(title="ComfyUI批量测试平台", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -82,15 +107,18 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
+    app.mount("/datasets", StaticFiles(directory=DATASET_ROOT), name="datasets")
 
     store = WorkflowStore(WORKFLOW_ROOT)
     media_manager = MediaManager(MEDIA_ROOT)
     job_manager = JobManager()
+    dataset_manager = DatasetManager(DATASET_ROOT)
     workflow_manager = WorkflowManager(WORKFLOW_ROOT)
 
     app.state.store = store
     app.state.media = media_manager
     app.state.jobs = job_manager
+    app.state.datasets = dataset_manager
     app.state.workflow_files = workflow_manager
 
     @app.get("/")
@@ -225,6 +253,73 @@ def create_app() -> FastAPI:
         if failures:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(failures))
         return {"status": "ok"}
+
+    @app.get("/api/datasets")
+    async def list_datasets() -> Dict[str, object]:
+        datasets = [serialize_dataset(info) for info in dataset_manager.list_datasets()]
+        return {"datasets": datasets}
+
+    @app.get("/api/datasets/{dataset_name}")
+    async def get_dataset(dataset_name: str) -> Dict[str, object]:
+        safe_name = _sanitize_for_fs(dataset_name)
+        try:
+            pairs = dataset_manager.collect_pairs(safe_name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        metadata_path = DATASET_ROOT / safe_name / "metadata.json"
+        metadata: Dict[str, object] = {}
+        if metadata_path.exists():
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+        return {"metadata": metadata, "pairs": pairs}
+
+    @app.delete("/api/datasets/{dataset_name}")
+    async def delete_dataset(dataset_name: str) -> Dict[str, object]:
+        dataset_manager.remove_dataset(_sanitize_for_fs(dataset_name))
+        return {"status": "ok"}
+
+    @app.delete("/api/datasets/{dataset_name}/pair/{index}")
+    async def delete_dataset_pair(dataset_name: str, index: int) -> Dict[str, object]:
+        dataset_manager.remove_pair(_sanitize_for_fs(dataset_name), index)
+        return {"status": "ok"}
+
+    @app.post("/api/datasets/run", status_code=status.HTTP_201_CREATED)
+    async def run_dataset(payload: DatasetRunRequest) -> Dict[str, object]:
+        try:
+            summary = execute_dataset_run(store, dataset_manager, payload)
+        except HTTPException:
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return summary
+
+    @app.get("/api/dataset/workflows")
+    async def dataset_workflow_candidates() -> Dict[str, object]:
+        store.refresh()
+        workflows: List[Dict[str, object]] = []
+        for info in store.list_workflows():
+            placeholders: List[Dict[str, object]] = []
+            for placeholder in info.placeholders:
+                normalized = normalize_placeholder_key(placeholder.name)
+                if not normalized.strip("{}").lower().startswith("input"):
+                    continue
+                placeholders.append(
+                    {
+                        "name": normalized,
+                        "display": placeholder.name,
+                        "type": placeholder.media_type,
+                    }
+                )
+            if placeholders:
+                workflows.append(
+                    {
+                        "id": info.identifier,
+                        "name": info.name,
+                        "path": str(info.path),
+                        "placeholders": placeholders,
+                    }
+                )
+        return {"workflows": workflows}
 
     @app.get("/api/media/all")
     async def list_all_media(media_type: str = "") -> Dict[str, object]:
@@ -379,8 +474,101 @@ def execute_job(
         job_manager.append_log(job_id, "任务执行完成")
     except Exception as exc:  # pylint: disable=broad-except
         LOG.exception("任务执行失败: %s", exc)
-    job_manager.mark_failed(job_id, str(exc))
-    job_manager.append_log(job_id, f"任务失败: {exc}")
+        job_manager.mark_failed(job_id, str(exc))
+        job_manager.append_log(job_id, f"任务失败: {exc}")
+
+
+# ---------------------------------------------------------------- dataset run
+def execute_dataset_run(
+    store: WorkflowStore,
+    dataset_manager: DatasetManager,
+    payload: DatasetRunRequest,
+) -> Dict[str, object]:
+    options = payload.options or DatasetRunOptions()
+    dataset_name_raw = (payload.dataset_name or "").strip()
+    if not dataset_name_raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据集名称不能为空")
+    dataset_name = _sanitize_for_fs(dataset_name_raw)
+    dataset_dir = DATASET_ROOT / dataset_name
+    if dataset_dir.exists() and any(dataset_dir.iterdir()):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="数据集已存在")
+
+    placeholder_map = payload.placeholders or {}
+    if not placeholder_map:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="必须指定占位符素材")
+
+    normalized_order: List[str] = []
+    normalized_map: Dict[str, List[str]] = {}
+    placeholder_labels: Dict[str, str] = {}
+    for key, values in placeholder_map.items():
+        normalized = normalize_placeholder_key(key)
+        normalized_order.append(normalized)
+        placeholder_labels[normalized] = key
+        normalized_map[normalized] = list(values)
+
+    workflow_info = store.get_workflow(payload.workflow_id)
+    if workflow_info is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到指定的工作流")
+
+    structure, control_slot_map = dataset_manager.ensure_structure(dataset_name, normalized_order or ["input_image"])
+    target_dir = structure["target"]
+    server_url = options.server_url or DEFAULT_SERVER_URL
+    client = ComfyAPIClient(server_url)
+
+    pairs = list(dataset_manager.iter_pairs(normalized_map))
+    total_runs = len(pairs)
+    if total_runs == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="未生成任何运行批次")
+
+    try:
+        for index, pair in enumerate(pairs, start=1):
+            remote_mapping: Dict[str, str] = {}
+            for placeholder in normalized_order:
+                slot_name = control_slot_map.get(placeholder, "control")
+                control_dir = structure[slot_name]
+                source_path = pair[placeholder]
+                saved_control = dataset_manager.save_control(
+                    control_dir,
+                    index,
+                    source_path,
+                    force_jpg=options.convert_images_to_jpg,
+                )
+                uploaded_name = client.upload_file(saved_control)
+                for alias in placeholder_aliases(placeholder):
+                    remote_mapping[alias] = uploaded_name
+
+            with workflow_info.path.open("r", encoding="utf-8") as handle:
+                workflow_data = json.load(handle)
+            _replace_placeholders(workflow_data, remote_mapping)
+            prompt_id, history = client.execute_prompt(workflow_data)
+            outputs = client.collect_outputs(history)
+            asset = next((item for item in outputs if item.bucket in ("images", "videos")), None)
+            if asset is None:
+                raise RuntimeError("工作流未返回图像或视频输出")
+            convert_output = options.convert_images_to_jpg and asset.bucket == "images"
+            dataset_manager.save_target_asset(
+                target_dir,
+                index,
+                asset.original_filename,
+                asset.data,
+                convert_to_jpg=convert_output,
+            )
+    except Exception:
+        dataset_manager.remove_dataset(dataset_name)
+        raise
+
+    metadata = {
+        "dataset_name": dataset_name,
+        "workflow_id": workflow_info.identifier,
+        "workflow_path": str(workflow_info.path),
+        "workflow_name": workflow_info.name,
+        "total_runs": total_runs,
+        "placeholders": [placeholder_labels[p] for p in normalized_order],
+        "placeholder_map": placeholder_labels,
+        "control_slots": control_slot_map,
+    }
+    dataset_manager.save_metadata(dataset_name, metadata)
+    return {"dataset": dataset_name, "total_runs": total_runs}
 
 
 # ----------------------------------------------------------------- serializers
@@ -449,6 +637,26 @@ def serialize_media(entry: MediaEntry) -> Dict[str, object]:
         "media_type": entry.media_type,
         "url": None if entry.is_dir else f"/media/{relative_path}",
     }
+
+
+def serialize_dataset(info) -> Dict[str, object]:
+    return {
+        "name": info.name,
+        "total_runs": info.total_runs,
+        "workflows": info.workflows,
+    }
+
+
+def placeholder_aliases(placeholder: str) -> List[str]:
+    bare = placeholder.strip("{}")
+    return list({placeholder, bare, f"{{{bare}}}"})
+
+
+def normalize_placeholder_key(key: str) -> str:
+    bare = key.strip().strip("{}")
+    if not bare:
+        raise ValueError("占位符名称不能为空")
+    return f"{{{bare}}}"
 
 
 app = create_app()

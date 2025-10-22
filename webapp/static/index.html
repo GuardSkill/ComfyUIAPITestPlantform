@@ -27,6 +27,7 @@
   <main class="app-main">
     <nav class="tab-bar">
       <button class="tab-button active" data-tab="workflows">批量测试</button>
+      <button class="tab-button" data-tab="dataset">数据集制作</button>
       <button class="tab-button" data-tab="media">媒体素材管理</button>
       <button class="tab-button" data-tab="results">运行结果</button>
     </nav>
@@ -70,6 +71,41 @@
               <h3>工作流列表</h3>
               <ul id="workflow-list" class="workflow-list"></ul>
             </div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section class="tab-content" id="tab-dataset">
+      <div class="dataset-layout">
+        <section class="pane dataset-builder">
+          <h2>数据集制作</h2>
+          <div class="dataset-form-row">
+            <label>
+              工作流
+              <select id="dataset-workflow">
+                <option value="">请选择需要批量运行的工作流</option>
+              </select>
+            </label>
+            <label>
+              数据集名称
+              <input id="dataset-name" type="text" placeholder="例如: dataset_001">
+            </label>
+            <button id="dataset-run" disabled>开始创建</button>
+          </div>
+          <div id="dataset-placeholders" class="dataset-placeholder-list"></div>
+        </section>
+        <section class="pane dataset-list-pane">
+          <div class="dataset-list-header">
+            <h2>数据集列表</h2>
+            <button id="dataset-refresh">刷新</button>
+          </div>
+          <ul id="dataset-list" class="dataset-list"></ul>
+          <div id="dataset-viewer" class="dataset-viewer hidden">
+            <div class="dataset-viewer-header">
+              <h3 id="dataset-viewer-title">数据集预览</h3>
+              <button id="dataset-viewer-close" type="button">关闭</button>
+            </div>
+            <div id="dataset-viewer-content" class="dataset-viewer-content"></div>
           </div>
         </section>
       </div>
