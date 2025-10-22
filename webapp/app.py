@@ -52,6 +52,10 @@ class DeletePayload(BaseModel):
     paths: List[str] = Field(..., description="需要删除的工作流文件或文件夹相对路径列表")
 
 
+class DeleteMediaPayload(BaseModel):
+    paths: List[str] = Field(..., description="需要删除的媒体文件或文件夹路径列表，相对于 media 根目录")
+
+
 class RunBatchPayload(BaseModel):
     group_id: str = Field(..., description="工作流分组标识")
     workflow_ids: List[str] = Field(..., description="要批量执行的工作流id列表")
@@ -207,6 +211,20 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return {"entry": serialize_media(entry)}
+
+    @app.post("/api/media/delete")
+    async def delete_media(payload: DeleteMediaPayload = Body(...)) -> Dict[str, object]:
+        if not payload.paths:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="未选择任何媒体项")
+        failures: List[str] = []
+        for path in payload.paths:
+            try:
+                media_manager.delete(path)
+            except (FileNotFoundError, ValueError, PermissionError) as exc:
+                failures.append(f"{path}: {exc}")
+        if failures:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(failures))
+        return {"status": "ok"}
 
     @app.get("/api/media/all")
     async def list_all_media(media_type: str = "") -> Dict[str, object]:

@@ -14,6 +14,7 @@ const state = {
   expandedTreeNodes: new Set(),
   selectedTreeNodes: new Set(),
   treeActivePath: null,
+  previewEntryPath: null,
 };
 
 const MODAL_EMPTY_TEXT = "暂无可用媒体，请先在媒体素材管理页上传。";
@@ -26,6 +27,7 @@ const refs = {
   placeholderList: document.getElementById("placeholder-list"),
   placeholderTip: document.getElementById("placeholder-tip"),
   runButton: document.getElementById("run-batch"),
+  clearSelectionButton: document.getElementById("clear-selection"),
   serverInput: document.getElementById("server-url"),
   outputInput: document.getElementById("output-dir"),
   tabButtons: document.querySelectorAll(".tab-button"),
@@ -40,6 +42,7 @@ const refs = {
   newFolderInput: document.getElementById("new-folder-name"),
   preview: document.getElementById("preview"),
   previewContent: document.getElementById("preview-content"),
+  previewClose: document.getElementById("preview-close"),
   toast: document.getElementById("toast"),
   refreshGroups: document.getElementById("refresh-groups"),
   testServer: document.getElementById("test-server"),
@@ -538,6 +541,61 @@ function updateRunButton() {
   refs.runButton.disabled = !(hasWorkflows && allFilled);
 }
 
+function createMediaThumbnail(entry) {
+  const container = document.createElement("div");
+  container.className = "media-thumb";
+  const mediaUrl = entry.url || `/media/${entry.path}`;
+  if (entry.mime_type?.startsWith("image")) {
+    const img = document.createElement("img");
+    img.src = mediaUrl;
+    container.appendChild(img);
+  } else if (entry.mime_type?.startsWith("video")) {
+    const video = document.createElement("video");
+    video.src = mediaUrl;
+    video.muted = true;
+    video.loop = true;
+    video.autoplay = true;
+    video.controls = false;
+    video.preload = "metadata";
+    video.playsInline = true;
+    container.appendChild(video);
+  } else {
+    const span = document.createElement("span");
+    span.textContent = "文件";
+    container.appendChild(span);
+  }
+  return container;
+}
+
+async function deleteMediaEntry(entry) {
+  if (!entry.path) {
+    return;
+  }
+  if (!confirm(`确认删除 ${entry.name} 吗？`)) {
+    return;
+  }
+  try {
+    await fetchJSON("/api/media/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: [entry.path] }),
+    });
+    showToast("删除成功");
+    if (state.previewEntryPath && isAncestorPath(entry.path, state.previewEntryPath)) {
+      clearPreview();
+    }
+    await loadMediaTab();
+  } catch (error) {
+    showToast(`删除失败：${error.message}`);
+  }
+}
+
+function clearPreview() {
+  refs.previewContent.innerHTML = "";
+  refs.preview.classList.add("hidden");
+  state.previewEntryPath = null;
+}
+
 function renderMedia(listing) {
   refs.mediaFolders.innerHTML = "";
   refs.mediaFiles.innerHTML = "";
@@ -562,15 +620,42 @@ function renderMedia(listing) {
 
   listing.files.forEach((entry) => {
     const item = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "media-file-row";
+
+    const info = document.createElement("div");
+    info.className = "media-file-info";
+    const thumb = createMediaThumbnail(entry);
+    info.appendChild(thumb);
     const name = document.createElement("span");
     name.textContent = entry.name;
-    name.addEventListener("click", () => renderPreview(entry));
-    const rename = document.createElement("button");
-    rename.type = "button";
-    rename.textContent = "重命名";
-    rename.addEventListener("click", () => promptRename(entry));
-    item.appendChild(name);
-    item.appendChild(rename);
+    info.appendChild(name);
+    info.addEventListener("click", () => renderPreview(entry));
+    row.appendChild(info);
+
+    const actions = document.createElement("div");
+    actions.className = "media-file-actions";
+
+    const previewButton = document.createElement("button");
+    previewButton.type = "button";
+    previewButton.textContent = "预览";
+    previewButton.addEventListener("click", () => renderPreview(entry));
+    actions.appendChild(previewButton);
+
+    const renameButton = document.createElement("button");
+    renameButton.type = "button";
+    renameButton.textContent = "重命名";
+    renameButton.addEventListener("click", () => promptRename(entry));
+    actions.appendChild(renameButton);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "删除";
+    deleteButton.addEventListener("click", () => deleteMediaEntry(entry));
+    actions.appendChild(deleteButton);
+
+    row.appendChild(actions);
+    item.appendChild(row);
     refs.mediaFiles.appendChild(item);
   });
 }
@@ -578,20 +663,24 @@ function renderMedia(listing) {
 function renderPreview(entry) {
   refs.preview.classList.remove("hidden");
   refs.previewContent.innerHTML = "";
-  const fullPath = `/media/${entry.path}`;
+  const mediaUrl = entry.url || `/media/${entry.path}`;
+  state.previewEntryPath = entry.path;
 
   if (entry.mime_type?.startsWith("image")) {
     const img = document.createElement("img");
-    img.src = fullPath;
+    img.src = mediaUrl;
     refs.previewContent.appendChild(img);
   } else if (entry.mime_type?.startsWith("video")) {
     const video = document.createElement("video");
-    video.src = fullPath;
+    video.src = mediaUrl;
     video.controls = true;
+    video.loop = true;
+    video.preload = "metadata";
+    video.playsInline = true;
     refs.previewContent.appendChild(video);
   } else {
     const link = document.createElement("a");
-    link.href = fullPath;
+    link.href = mediaUrl;
     link.textContent = "下载查看";
     link.target = "_blank";
     refs.previewContent.appendChild(link);
@@ -986,6 +1075,20 @@ async function loadMediaTab() {
   }
 }
 
+function clearAllSelections() {
+  state.selectedGroupId = null;
+  state.selectedWorkflows = new Set();
+  state.assignments = {};
+  state.treeActivePath = null;
+  state.selectedTreeNodes.clear();
+  renderGroups();
+  renderPlaceholders(null);
+  renderWorkflows(null);
+  renderWorkflowTree();
+  updateRunButton();
+  showToast("已取消所有选择");
+}
+
 async function loadWorkflowTree() {
   try {
     const { tree } = await fetchJSON("/api/workflow-tree");
@@ -1024,6 +1127,14 @@ function renderJobs() {
     } else if (parsedRemark && parsedRemark.message) {
       remark = parsedRemark.message;
     }
+    const totalWorkflows = Array.isArray(job.results) ? job.results.length : 0;
+    const successWorkflows = Array.isArray(job.results)
+      ? job.results.filter((result) => result.status === "success").length
+      : 0;
+    let summary = totalWorkflows ? `${successWorkflows}/${totalWorkflows} 成功` : "";
+    if (remark) {
+      summary = summary ? `${summary} | ${remark}` : remark;
+    }
     row.innerHTML = `
       <td>${job.id}</td>
       <td>${job.status}</td>
@@ -1041,7 +1152,7 @@ function renderJobs() {
     detailCell.appendChild(button);
     const remarkCell = row.querySelector(".job-remark");
     if (remarkCell) {
-      remarkCell.textContent = remark || "";
+      remarkCell.textContent = summary;
     }
     if (job.status === "failed") {
       row.classList.add("job-row-failed");
@@ -1204,6 +1315,7 @@ function switchTab(tabId) {
 
 function setupEventListeners() {
   refs.runButton.addEventListener("click", runBatch);
+  refs.clearSelectionButton?.addEventListener("click", clearAllSelections);
   refs.refreshGroups.addEventListener("click", () => {
     showToast("刷新工作流分组...");
     Promise.all([loadGroups(), loadWorkflowTree()]);
@@ -1310,6 +1422,10 @@ function setupEventListeners() {
   refs.overlay.addEventListener("click", () => {
     closeMediaModal();
     closeResultsModal();
+  });
+
+  refs.previewClose?.addEventListener("click", () => {
+    clearPreview();
   });
 
   document.querySelectorAll("[data-modal-close]").forEach((button) => {

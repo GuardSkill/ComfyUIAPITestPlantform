@@ -107,6 +107,17 @@ class MediaManager:
         shutil.move(str(target), str(destination))
         return self._entry_from_path(destination)
 
+    def delete(self, relative_path: str) -> None:
+        target = self._resolve(relative_path)
+        if target == self.root:
+            raise ValueError("禁止删除媒体根目录")
+        if not target.exists():
+            raise FileNotFoundError("目标不存在")
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+
     def list_all_files(self, media_type: Optional[str] = None) -> List[MediaEntry]:
         entries: List[MediaEntry] = []
         target_type = (media_type or "").lower() or None

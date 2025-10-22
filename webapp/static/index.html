@@ -54,7 +54,10 @@
         <section class="pane pane-workflows">
           <div class="workflow-header">
             <h2 id="workflow-title">请选择分组</h2>
-            <button id="run-batch" disabled>开始批量测试</button>
+            <div class="workflow-actions">
+              <button id="clear-selection">取消选择</button>
+              <button id="run-batch" disabled>开始批量测试</button>
+            </div>
           </div>
           <div class="workflow-content">
             <div class="placeholder-panel">
@@ -101,7 +104,10 @@
             </div>
           </div>
           <div id="preview" class="media-preview hidden">
-            <h3>预览</h3>
+            <div class="preview-header">
+              <h3>预览</h3>
+              <button id="preview-close" type="button">关闭预览</button>
+            </div>
             <div id="preview-content"></div>
           </div>
         </div>
