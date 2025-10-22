@@ -14,6 +14,7 @@ const state = {
   expandedTreeNodes: new Set(),
   selectedTreeNodes: new Set(),
   treeActivePath: null,
+  treeWorkflowIds: new Set(),
   previewEntryPath: null,
 };
 
@@ -62,6 +63,7 @@ const refs = {
   workflowUploadButton: document.getElementById("workflow-upload-btn"),
   workflowRenameButton: document.getElementById("workflow-rename-btn"),
   workflowDeleteButton: document.getElementById("workflow-delete-btn"),
+  workflowSelectAllButton: document.getElementById("workflow-select-all"),
   workflowTreeRefresh: document.getElementById("workflow-tree-refresh"),
 };
 
@@ -344,6 +346,11 @@ function setTreeSelection(key, checked) {
   });
   renderWorkflowTree();
   applyTreeSelectionToGroups();
+  renderGroups();
+  const group = state.groups.find((item) => item.id === state.selectedGroupId);
+  renderPlaceholders(group || null);
+  renderWorkflows(group || null);
+  updateRunButton();
 }
 
 function getSelectedWorkflowIdsFromTree() {
@@ -357,9 +364,31 @@ function getSelectedWorkflowIdsFromTree() {
   return ids;
 }
 
+function selectAllTreeWorkflows() {
+  if (!state.workflowNodeMeta.size) {
+    return;
+  }
+  state.selectedTreeNodes.clear();
+  state.workflowNodeMeta.forEach((meta, key) => {
+    if (meta.node?.workflow?.id) {
+      state.selectedTreeNodes.add(meta.node.path || key);
+    }
+  });
+  state.treeActivePath = null;
+  renderWorkflowTree();
+  applyTreeSelectionToGroups();
+}
+
 function applyTreeSelectionToGroups() {
   const selectedIds = new Set(getSelectedWorkflowIdsFromTree());
+  state.treeWorkflowIds = selectedIds;
   if (!selectedIds.size) {
+    state.selectedGroupId = null;
+    state.selectedWorkflows = new Set();
+    renderGroups();
+    renderPlaceholders(null);
+    renderWorkflows(null);
+    updateRunButton();
     return;
   }
   const matches = [];
@@ -374,6 +403,12 @@ function applyTreeSelectionToGroups() {
   }
   if (matches.length > 1) {
     showToast("所选工作流包含多种输入输出，请按分类分别运行");
+    state.selectedGroupId = null;
+    state.selectedWorkflows = new Set();
+    renderGroups();
+    renderPlaceholders(null);
+    renderWorkflows(null);
+    updateRunButton();
     return;
   }
   const target = matches[0];
@@ -387,7 +422,16 @@ function applyTreeSelectionToGroups() {
 
 function renderGroups() {
   refs.groupList.innerHTML = "";
+  const activeIds = new Set(state.selectedWorkflows);
+  const treeIds = state.treeWorkflowIds instanceof Set ? state.treeWorkflowIds : new Set();
+  const useFilter = treeIds.size > 0;
+  let rendered = false;
   state.groups.forEach((group) => {
+    const hasTreeMatch = group.workflows.some((workflow) => treeIds.has(workflow.id));
+    const hasSelection = group.workflows.some((workflow) => activeIds.has(workflow.id));
+    if (useFilter && !hasTreeMatch) {
+      return;
+    }
     const item = document.createElement("li");
     item.textContent = group.label;
     item.dataset.id = group.id;
@@ -396,7 +440,15 @@ function renderGroups() {
     }
     item.addEventListener("click", () => selectGroup(group.id));
     refs.groupList.appendChild(item);
+    rendered = true;
   });
+  if (!rendered) {
+    const placeholder = document.createElement("li");
+    placeholder.textContent = "请选择工作流";
+    placeholder.style.color = "#5c6784";
+    placeholder.style.cursor = "default";
+    refs.groupList.appendChild(placeholder);
+  }
 }
 
 function renderPlaceholders(group) {
@@ -507,10 +559,12 @@ function selectGroup(groupId) {
   state.selectedGroupId = groupId;
   const group = state.groups.find((item) => item.id === groupId);
   const treeSelectedIds = new Set(getSelectedWorkflowIdsFromTree());
+  const hasTreeSelection = state.selectedTreeNodes.size > 0;
   let workflowsToSelect = [];
   if (group) {
-    workflowsToSelect = group.workflows.filter((item) => !treeSelectedIds.size || treeSelectedIds.has(item.id));
-    if (!workflowsToSelect.length) {
+    if (hasTreeSelection) {
+      workflowsToSelect = group.workflows.filter((item) => treeSelectedIds.has(item.id));
+    } else {
       workflowsToSelect = group.workflows;
     }
   }
@@ -1081,6 +1135,7 @@ function clearAllSelections() {
   state.assignments = {};
   state.treeActivePath = null;
   state.selectedTreeNodes.clear();
+  state.treeWorkflowIds = new Set();
   renderGroups();
   renderPlaceholders(null);
   renderWorkflows(null);
@@ -1336,6 +1391,10 @@ function setupEventListeners() {
 
   refs.workflowDeleteButton?.addEventListener("click", () => {
     deleteWorkflowNodes();
+  });
+
+  refs.workflowSelectAllButton?.addEventListener("click", () => {
+    selectAllTreeWorkflows();
   });
 
   refs.modalUploadButton?.addEventListener("click", () => {
