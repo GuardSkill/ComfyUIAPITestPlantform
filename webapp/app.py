@@ -32,6 +32,7 @@ from .config import (
     ensure_dataset_root,
     ensure_media_root,
 )
+from .dataset_jobs import DatasetJobManager
 from .dataset_manager import DatasetManager
 from .jobs import JobManager
 from .media_manager import MediaEntry, MediaManager
@@ -114,12 +115,14 @@ def create_app() -> FastAPI:
     media_manager = MediaManager(MEDIA_ROOT)
     job_manager = JobManager()
     dataset_manager = DatasetManager(DATASET_ROOT)
+    dataset_job_manager = DatasetJobManager()
     workflow_manager = WorkflowManager(WORKFLOW_ROOT)
 
     app.state.store = store
     app.state.media = media_manager
     app.state.jobs = job_manager
     app.state.datasets = dataset_manager
+    app.state.dataset_jobs = dataset_job_manager
     app.state.workflow_files = workflow_manager
 
     @app.get("/")
@@ -291,15 +294,39 @@ def create_app() -> FastAPI:
         dataset_manager.remove_pair(_sanitize_for_fs(dataset_name), index)
         return {"status": "ok"}
 
-    @app.post("/api/datasets/run", status_code=status.HTTP_201_CREATED)
-    async def run_dataset(payload: DatasetRunRequest) -> Dict[str, object]:
-        try:
-            summary = execute_dataset_run(store, dataset_manager, payload)
-        except HTTPException:
-            raise
-        except Exception as exc:  # pylint: disable=broad-except
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return summary
+    @app.post("/api/datasets/run", status_code=status.HTTP_202_ACCEPTED)
+    async def run_dataset(payload: DatasetRunRequest, background_tasks: BackgroundTasks) -> Dict[str, object]:
+        dataset_name_raw = (payload.dataset_name or "").strip()
+        if not dataset_name_raw:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据集名称不能为空")
+        safe_name = _sanitize_for_fs(dataset_name_raw)
+        safe_payload = payload.copy(update={"dataset_name": safe_name})
+        job = dataset_job_manager.create_job(safe_name, safe_payload.workflow_id)
+
+        def _task() -> None:
+            try:
+                summary = execute_dataset_run(store, dataset_manager, safe_payload, dataset_job_manager, job.job_id)
+                dataset_job_manager.mark_finished(job.job_id, summary)
+            except HTTPException as exc:
+                dataset_job_manager.mark_failed(job.job_id, str(exc.detail))
+            except Exception as exc:  # pylint: disable=broad-except
+                LOG.exception("数据集任务失败: %s", exc)
+                dataset_job_manager.mark_failed(job.job_id, str(exc))
+
+        background_tasks.add_task(_task)
+        return {"job_id": job.job_id}
+
+    @app.get("/api/dataset-jobs")
+    async def list_dataset_jobs() -> Dict[str, object]:
+        jobs = [serialize_dataset_job(job) for job in dataset_job_manager.list_jobs()]
+        return {"jobs": jobs}
+
+    @app.get("/api/dataset-jobs/{job_id}")
+    async def get_dataset_job(job_id: str) -> Dict[str, object]:
+        job = dataset_job_manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到数据集任务")
+        return serialize_dataset_job(job)
 
     @app.get("/api/dataset/workflows")
     async def dataset_workflow_candidates() -> Dict[str, object]:
@@ -491,6 +518,8 @@ def execute_dataset_run(
     store: WorkflowStore,
     dataset_manager: DatasetManager,
     payload: DatasetRunRequest,
+    job_manager: DatasetJobManager,
+    job_id: str,
 ) -> Dict[str, object]:
     options = payload.options or DatasetRunOptions()
     dataset_name_raw = (payload.dataset_name or "").strip()
@@ -499,18 +528,14 @@ def execute_dataset_run(
     dataset_name = _sanitize_for_fs(dataset_name_raw)
     dataset_dir = DATASET_ROOT / dataset_name
     metadata_path = dataset_dir / "metadata.json"
-    dataset_exists = dataset_dir.exists() and any(dataset_dir.iterdir())
+    dataset_pre_exists = dataset_dir.exists()
+    dataset_exists = dataset_pre_exists and any(dataset_dir.iterdir())
     existing_metadata: Dict[str, object] = {}
     if metadata_path.exists():
         with metadata_path.open("r", encoding="utf-8") as handle:
             existing_metadata = json.load(handle)
     if dataset_exists and not options.append:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="数据集已存在，请勾选追加或更换名称")
-
-    existing_placeholders: List[str] = list(existing_metadata.get("placeholder_map", {}).keys()) if existing_metadata else []
-    if dataset_exists and options.append:
-        if not existing_placeholders:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法识别已有数据集占位符映射")
 
     placeholder_map = payload.placeholders or {}
     if not placeholder_map:
@@ -524,17 +549,11 @@ def execute_dataset_run(
         normalized_order.append(normalized)
         placeholder_labels[normalized] = key
         normalized_map[normalized] = list(values)
-    if existing_placeholders:
-        if normalized_order != existing_placeholders:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="占位符与现有数据集不匹配")
-
     workflow_info = store.get_workflow(payload.workflow_id)
     if workflow_info is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到指定的工作流")
 
     existing_control_map = existing_metadata.get("control_slots") if existing_metadata else None
-    if existing_metadata:
-        placeholder_labels = existing_metadata.get("placeholder_map", placeholder_labels)
 
     structure, control_slot_map, last_index = dataset_manager.ensure_structure(
         dataset_name,
@@ -550,6 +569,7 @@ def execute_dataset_run(
     if total_runs == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="未生成任何运行批次")
 
+    job_manager.mark_running(job_id, total_runs)
     try:
         for offset, pair in enumerate(pairs, start=1):
             index = last_index + offset
@@ -584,13 +604,13 @@ def execute_dataset_run(
                 asset.data,
                 convert_to_jpg=convert_output,
             )
+            job_manager.update_progress(job_id, offset, f"第 {offset}/{total_runs} 次运行完成")
     except Exception:
-        dataset_manager.remove_dataset(dataset_name)
+        if not dataset_pre_exists:
+            dataset_manager.remove_dataset(dataset_name)
         raise
 
     existing_runs = existing_metadata.get("total_runs", 0)
-    # if existing_metadata.get("workflow_id") and existing_metadata.get("workflow_id") != workflow_info.identifier:
-    #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目标数据集对应的工作流不一致")
     metadata = {
         "dataset_name": dataset_name,
         "workflow_id": workflow_info.identifier,
@@ -696,6 +716,22 @@ def normalize_placeholder_key(key: str) -> str:
     if not bare:
         raise ValueError("占位符名称不能为空")
     return f"{{{bare}}}"
+
+
+def serialize_dataset_job(job) -> Dict[str, object]:
+    return {
+        "job_id": job.job_id,
+        "dataset_name": job.dataset_name,
+        "workflow_id": job.workflow_id,
+        "status": job.status,
+        "total": job.total,
+        "completed": job.completed,
+        "error": job.error,
+        "result": job.result,
+        "logs": job.logs,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+    }
 
 
 app = create_app()

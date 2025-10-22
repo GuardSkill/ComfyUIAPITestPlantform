@@ -796,6 +796,15 @@ button[disabled] {
   box-shadow: 0 3px 8px rgba(31, 50, 94, 0.08);
 }
 
+.dataset-job-status {
+  background: #eef3ff;
+  border: 1px solid #d5dcf0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #1f2328;
+}
+
 .dataset-placeholder-header {
   display: flex;
   justify-content: space-between;

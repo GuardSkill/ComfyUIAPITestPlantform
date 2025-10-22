@@ -34,6 +34,9 @@ const state = {
     isRunning: false,
     appendMode: false,
     appendTarget: "",
+    currentJobId: null,
+    jobStatus: null,
+    jobPoller: null,
   },
 };
 
@@ -89,6 +92,7 @@ const refs = {
   datasetViewerTitle: document.getElementById("dataset-viewer-title"),
   datasetViewerClose: document.getElementById("dataset-viewer-close"),
   datasetViewerContent: document.getElementById("dataset-viewer-content"),
+  datasetJobStatus: document.getElementById("dataset-job-status"),
   workflowTree: document.getElementById("workflow-tree"),
   workflowUploadInput: document.getElementById("workflow-upload-input"),
   workflowUploadButton: document.getElementById("workflow-upload-btn"),
@@ -811,6 +815,7 @@ function renderDatasetBuilder() {
       refs.datasetExistingSelect.value = state.dataset.appendTarget;
     }
   }
+  renderDatasetJobStatus();
 }
 
 function renderDatasetWorkflowOptions() {
@@ -982,34 +987,25 @@ async function runDataset() {
     showToast("请为每个输入占位符选择至少一个素材");
     return;
   }
+  showToast("正在创建数据集任务...");
   state.dataset.isRunning = true;
   updateDatasetRunButton();
+  renderDatasetJobStatus();
   try {
-    showToast("正在创建数据集，请稍候...");
-    const result = await fetchJSON("/api/datasets/run", {
+    const { job_id: jobId } = await fetchJSON("/api/datasets/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (result.previous_runs > 0) {
-      showToast(`数据集 ${result.dataset} 追加 ${result.total_runs} 条，累计 ${result.total_count} 条`);
-    } else {
-      showToast(`数据集 ${result.dataset} 创建完成，共 ${result.total_runs} 条`);
-    }
-    await loadDatasetsList();
-    await viewDataset(result.dataset);
-    if (!state.dataset.appendMode) {
-      state.dataset.datasetName = "";
-      state.dataset.newDatasetName = "";
-      if (refs.datasetNameInput) {
-        refs.datasetNameInput.value = "";
-      }
-    }
+    state.dataset.currentJobId = jobId;
+    state.dataset.jobStatus = { status: "queued", total: 0, completed: 0 };
+    renderDatasetJobStatus();
+    startDatasetJobPolling(jobId);
   } catch (error) {
     showToast(`创建数据集失败：${error.message}`);
-  } finally {
     state.dataset.isRunning = false;
     updateDatasetRunButton();
+    renderDatasetJobStatus();
   }
 }
 
@@ -1082,6 +1078,105 @@ function renderDatasetList() {
     item.appendChild(actions);
     refs.datasetList.appendChild(item);
   });
+}
+
+function startDatasetJobPolling(jobId) {
+  stopDatasetJobPolling();
+  state.dataset.currentJobId = jobId;
+  state.dataset.jobStatus = state.dataset.jobStatus || { status: "queued", total: 0, completed: 0 };
+  renderDatasetJobStatus();
+  pollDatasetJob(jobId);
+  state.dataset.jobPoller = setInterval(() => pollDatasetJob(jobId), 1000);
+}
+
+function stopDatasetJobPolling() {
+  if (state.dataset.jobPoller) {
+    clearInterval(state.dataset.jobPoller);
+    state.dataset.jobPoller = null;
+  }
+  state.dataset.currentJobId = null;
+}
+
+async function pollDatasetJob(jobId) {
+  try {
+    const job = await fetchJSON(`/api/dataset-jobs/${jobId}`);
+    state.dataset.jobStatus = job;
+    renderDatasetJobStatus();
+    if (job.status === "running") {
+      state.dataset.isRunning = true;
+      updateDatasetRunButton();
+    }
+    if (job.status === "finished") {
+      stopDatasetJobPolling();
+      state.dataset.isRunning = false;
+      updateDatasetRunButton();
+      const result = job.result || {};
+      const totalText = result.total_runs ? `新增 ${result.total_runs} 条，累计 ${result.total_count || result.total_runs} 条` : "任务完成";
+      showToast(`数据集 ${result.dataset || state.dataset.datasetName} ${totalText}`);
+      await loadDatasetsList();
+      const datasetName = result.dataset || state.dataset.datasetName;
+      if (datasetName) {
+        await viewDataset(datasetName);
+      }
+      if (!state.dataset.appendMode) {
+        state.dataset.datasetName = "";
+        state.dataset.newDatasetName = "";
+        if (refs.datasetNameInput) {
+          refs.datasetNameInput.value = "";
+        }
+      }
+    } else if (job.status === "failed") {
+      stopDatasetJobPolling();
+      state.dataset.isRunning = false;
+      updateDatasetRunButton();
+      showToast(`数据集任务失败：${job.error || "未知错误"}`);
+    }
+  } catch (error) {
+    stopDatasetJobPolling();
+    state.dataset.isRunning = false;
+    updateDatasetRunButton();
+    showToast(`查询数据集任务失败：${error.message}`);
+  }
+  renderDatasetJobStatus();
+}
+
+function renderDatasetJobStatus() {
+  if (!refs.datasetJobStatus) {
+    return;
+  }
+  const job = state.dataset.jobStatus;
+  if (!job) {
+    refs.datasetJobStatus.classList.add("hidden");
+    refs.datasetJobStatus.textContent = "";
+    return;
+  }
+  refs.datasetJobStatus.classList.remove("hidden");
+  let text = `任务状态：${translateJobStatus(job.status)}`;
+  if (job.total) {
+    text += ` · ${job.completed}/${job.total}`;
+  }
+  if (job.status === "finished" && job.result) {
+    text += ` · 新增 ${job.result.total_runs} 条，累计 ${job.result.total_count} 条`;
+  }
+  if (job.status === "failed" && job.error) {
+    text += ` · 错误：${job.error}`;
+  }
+  refs.datasetJobStatus.textContent = text;
+}
+
+function translateJobStatus(status) {
+  switch (status) {
+    case "queued":
+      return "排队中";
+    case "running":
+      return "运行中";
+    case "finished":
+      return "已完成";
+    case "failed":
+      return "已失败";
+    default:
+      return status || "未知";
+  }
 }
 
 async function viewDataset(datasetName) {
