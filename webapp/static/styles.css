@@ -780,6 +780,15 @@ button[disabled] {
   min-width: 220px;
 }
 
+.dataset-server-status {
+  font-size: 13px;
+  color: #5c6784;
+  background: #f1f4ff;
+  border: 1px dashed #b8c3e5;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
 .dataset-placeholder-list {
   display: flex;
   flex-direction: column;

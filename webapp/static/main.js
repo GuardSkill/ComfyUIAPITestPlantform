@@ -37,6 +37,7 @@ const state = {
     currentJobId: null,
     jobStatus: null,
     jobPoller: null,
+    serverUrl: "",
   },
 };
 
@@ -93,6 +94,7 @@ const refs = {
   datasetViewerClose: document.getElementById("dataset-viewer-close"),
   datasetViewerContent: document.getElementById("dataset-viewer-content"),
   datasetJobStatus: document.getElementById("dataset-job-status"),
+  datasetServerStatus: document.getElementById("dataset-server-status"),
   workflowTree: document.getElementById("workflow-tree"),
   workflowUploadInput: document.getElementById("workflow-upload-input"),
   workflowUploadButton: document.getElementById("workflow-upload-btn"),
@@ -169,6 +171,32 @@ function resolveMediaUrl(entry) {
 function normalizePlaceholderKey(name) {
   const bare = (name || "").replace(/^\{|\}$/g, "");
   return `{${bare}}`;
+}
+
+function getConfiguredServerUrl() {
+  const input = refs.serverInput;
+  if (!input) {
+    return "";
+  }
+  const value = input.value ? input.value.trim() : "";
+  if (value) {
+    return value;
+  }
+  const fallback = typeof input.defaultValue === "string" ? input.defaultValue.trim() : "";
+  return fallback;
+}
+
+function updateDatasetServerStatus() {
+  if (!refs.datasetServerStatus) {
+    return;
+  }
+  const jobStatus = state.dataset.jobStatus;
+  const runningServer =
+    jobStatus && jobStatus.status === "running" && jobStatus.server_url ? jobStatus.server_url : "";
+  const configured = getConfiguredServerUrl();
+  const label = runningServer || configured;
+  const prefix = runningServer ? "正在使用服务器" : "计划使用服务器";
+  refs.datasetServerStatus.textContent = label ? `${prefix}：${label}` : `${prefix}：未设置`;
 }
 
 function isImagePath(path) {
@@ -966,6 +994,11 @@ async function runDataset() {
     showToast(state.dataset.appendMode ? "请选择需要追加的数据集" : "请填写数据集名称");
     return;
   }
+  const serverUrl = getConfiguredServerUrl();
+  if (!serverUrl) {
+    showToast("请先在数据集服务器地址中填写可用的 ComfyUI 地址");
+    return;
+  }
   const payload = {
     dataset_name: targetDatasetName,
     workflow_id: state.dataset.selectedWorkflowId,
@@ -973,8 +1006,10 @@ async function runDataset() {
     options: {
       convert_images_to_jpg: true,
       append: state.dataset.appendMode,
+      server_url: serverUrl,
     },
   };
+  state.dataset.serverUrl = serverUrl;
   state.dataset.placeholders.forEach((placeholder) => {
     const key = normalizePlaceholderKey(placeholder.name);
     const selections = state.dataset.placeholderSelections[key] || [];
@@ -998,14 +1033,16 @@ async function runDataset() {
       body: JSON.stringify(payload),
     });
     state.dataset.currentJobId = jobId;
-    state.dataset.jobStatus = { status: "queued", total: 0, completed: 0 };
+    state.dataset.jobStatus = { status: "queued", total: 0, completed: 0, server_url: serverUrl };
     renderDatasetJobStatus();
+    updateDatasetServerStatus();
     startDatasetJobPolling(jobId);
   } catch (error) {
     showToast(`创建数据集失败：${error.message}`);
     state.dataset.isRunning = false;
     updateDatasetRunButton();
     renderDatasetJobStatus();
+    updateDatasetServerStatus();
   }
 }
 
@@ -1055,7 +1092,13 @@ function renderDatasetList() {
       item.classList.add("active");
     }
     const info = document.createElement("div");
-    info.innerHTML = `<strong>${dataset.name}</strong><span>${dataset.total_runs || 0} 次运行</span>`;
+    const actualRuns = dataset.total_runs || 0;
+    const recordedRuns = dataset.recorded_runs ?? dataset.total_runs ?? 0;
+    const countLabel =
+      recordedRuns && recordedRuns !== actualRuns
+        ? `${actualRuns} 条（记录 ${recordedRuns}）`
+        : `${actualRuns} 条`;
+    info.innerHTML = `<strong>${dataset.name}</strong><span>${countLabel}</span>`;
     info.style.display = "flex";
     info.style.flexDirection = "column";
     info.style.gap = "4px";
@@ -1102,6 +1145,7 @@ async function pollDatasetJob(jobId) {
     const job = await fetchJSON(`/api/dataset-jobs/${jobId}`);
     state.dataset.jobStatus = job;
     renderDatasetJobStatus();
+    updateDatasetServerStatus();
     if (job.status === "running") {
       state.dataset.isRunning = true;
       updateDatasetRunButton();
@@ -1138,6 +1182,7 @@ async function pollDatasetJob(jobId) {
     showToast(`查询数据集任务失败：${error.message}`);
   }
   renderDatasetJobStatus();
+  updateDatasetServerStatus();
 }
 
 function renderDatasetJobStatus() {
@@ -1154,6 +1199,9 @@ function renderDatasetJobStatus() {
   let text = `任务状态：${translateJobStatus(job.status)}`;
   if (job.total) {
     text += ` · ${job.completed}/${job.total}`;
+  }
+  if (job.server_url) {
+    text += ` · 服务器：${job.server_url}`;
   }
   if (job.status === "finished" && job.result) {
     text += ` · 新增 ${job.result.total_runs} 条，累计 ${job.result.total_count} 条`;
@@ -1191,6 +1239,13 @@ async function viewDataset(datasetName) {
       }
     }
     state.dataset.datasetPairs = pairs || [];
+    const actualRuns = state.dataset.datasetPairs.length;
+    if (state.dataset.selectedDataset) {
+      state.dataset.selectedDataset.actual_runs = actualRuns;
+      if (typeof state.dataset.selectedDataset.total_runs === "number") {
+        state.dataset.selectedDataset.recorded_runs = state.dataset.selectedDataset.total_runs;
+      }
+    }
     if (state.dataset.appendMode) {
       state.dataset.appendTarget = datasetName;
       state.dataset.datasetName = datasetName;
@@ -1212,10 +1267,16 @@ function renderDatasetViewer(datasetName) {
   refs.datasetViewerTitle.textContent = `数据集：${datasetName}`;
   refs.datasetViewerContent.innerHTML = "";
   const metadata = state.dataset.selectedDataset || {};
-  const totalRuns = metadata.total_runs || metadata.totalCount || 0;
+  const actualRuns =
+    typeof metadata.actual_runs === "number" ? metadata.actual_runs : state.dataset.datasetPairs.length;
+  const recordedRuns =
+    typeof metadata.total_runs === "number" ? metadata.total_runs : metadata.totalCount || actualRuns;
   const summary = document.createElement("p");
   summary.className = "dataset-empty";
-  summary.textContent = `累计 ${totalRuns} 条数据`; 
+  summary.textContent =
+    recordedRuns && recordedRuns !== actualRuns
+      ? `累计 ${actualRuns} 条数据（记录 ${recordedRuns} 条）`
+      : `累计 ${actualRuns} 条数据`;
   refs.datasetViewerContent.appendChild(summary);
   const placeholderLabels = metadata.placeholder_map || {};
   const controlSlots = metadata.control_slots || {};
@@ -2049,6 +2110,10 @@ function setupEventListeners() {
     Promise.all([loadGroups(), loadWorkflowTree()]);
   });
   refs.testServer.addEventListener("click", testServerConnection);
+  refs.serverInput?.addEventListener("input", () => {
+    state.dataset.serverUrl = getConfiguredServerUrl();
+    updateDatasetServerStatus();
+  });
 
   refs.datasetWorkflowSelect?.addEventListener("change", (event) => {
     setDatasetWorkflow(event.target.value);
@@ -2332,6 +2397,8 @@ function startPolling() {
 
 async function bootstrap() {
   setupEventListeners();
+  state.dataset.serverUrl = getConfiguredServerUrl();
+  updateDatasetServerStatus();
   await Promise.all([loadGroups(), loadWorkflowTree(), loadDatasetWorkflows(), loadDatasetsList()]);
   renderDatasetBuilder();
   switchTab("workflows");

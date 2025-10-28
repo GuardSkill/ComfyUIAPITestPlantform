@@ -24,6 +24,7 @@ class DatasetInfo:
     path: Path
     workflows: List[str] = field(default_factory=list)
     total_runs: int = 0
+    recorded_runs: int = 0
 
 
 class DatasetManager:
@@ -39,11 +40,13 @@ class DatasetManager:
                 continue
             metadata = entry / "metadata.json"
             info = DatasetInfo(name=entry.name, path=entry)
+            actual_runs = len(self._collect_existing_indices(entry))
+            info.total_runs = actual_runs
             if metadata.exists():
                 with metadata.open("r", encoding="utf-8") as handle:
                     data = json.load(handle)
                 info.workflows = data.get("workflows", [])
-                info.total_runs = data.get("total_runs", 0)
+                info.recorded_runs = data.get("total_runs", actual_runs)
             infos.append(info)
         return infos
 

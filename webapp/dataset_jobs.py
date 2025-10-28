@@ -12,6 +12,7 @@ class DatasetJob:
     job_id: str
     dataset_name: str
     workflow_id: str
+    server_url: Optional[str] = None
     status: str = "queued"
     total: int = 0
     completed: int = 0
@@ -27,8 +28,8 @@ class DatasetJobManager:
         self._jobs: Dict[str, DatasetJob] = {}
         self._lock = threading.Lock()
 
-    def create_job(self, dataset_name: str, workflow_id: str) -> DatasetJob:
-        job = DatasetJob(job_id=uuid.uuid4().hex[:12], dataset_name=dataset_name, workflow_id=workflow_id)
+    def create_job(self, dataset_name: str, workflow_id: str, *, server_url: Optional[str] = None) -> DatasetJob:
+        job = DatasetJob(job_id=uuid.uuid4().hex[:12], dataset_name=dataset_name, workflow_id=workflow_id, server_url=server_url)
         with self._lock:
             self._jobs[job.job_id] = job
         return job

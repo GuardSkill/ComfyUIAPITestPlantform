@@ -275,11 +275,15 @@ def create_app() -> FastAPI:
         if metadata_path.exists():
             with metadata_path.open("r", encoding="utf-8") as handle:
                 metadata = json.load(handle)
+        metadata["actual_runs"] = len(pairs)
+        if "total_runs" in metadata:
+            metadata["recorded_runs"] = metadata.get("total_runs", len(pairs))
         return {
             "metadata": metadata,
             "pairs": pairs,
             "stats": {
-                "total_runs": metadata.get("total_runs", 0),
+                "total_runs": metadata.get("total_runs", len(pairs)),
+                "actual_runs": len(pairs),
                 "controls": metadata.get("control_slots", {}),
             },
         }
@@ -300,8 +304,11 @@ def create_app() -> FastAPI:
         if not dataset_name_raw:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据集名称不能为空")
         safe_name = _sanitize_for_fs(dataset_name_raw)
-        safe_payload = payload.copy(update={"dataset_name": safe_name})
-        job = dataset_job_manager.create_job(safe_name, safe_payload.workflow_id)
+        options = payload.options or DatasetRunOptions()
+        normalized_server = normalize_server_url(options.server_url or DEFAULT_SERVER_URL)
+        safe_options = options.copy(update={"server_url": normalized_server})
+        safe_payload = payload.copy(update={"dataset_name": safe_name, "options": safe_options})
+        job = dataset_job_manager.create_job(safe_name, safe_payload.workflow_id, server_url=normalized_server)
 
         def _task() -> None:
             try:
@@ -561,7 +568,7 @@ def execute_dataset_run(
         existing_control_map,
     )
     target_dir = structure["target"]
-    server_url = options.server_url or DEFAULT_SERVER_URL
+    server_url = normalize_server_url(options.server_url or DEFAULT_SERVER_URL)
     client = ComfyAPIClient(server_url)
 
     pairs = list(dataset_manager.iter_pairs(normalized_map))
@@ -570,6 +577,7 @@ def execute_dataset_run(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="未生成任何运行批次")
 
     job_manager.mark_running(job_id, total_runs)
+    job_manager.append_log(job_id, f"使用服务器：{server_url}")
     try:
         for offset, pair in enumerate(pairs, start=1):
             index = last_index + offset
@@ -702,6 +710,7 @@ def serialize_dataset(info) -> Dict[str, object]:
     return {
         "name": info.name,
         "total_runs": info.total_runs,
+        "recorded_runs": info.recorded_runs,
         "workflows": info.workflows,
     }
 
@@ -723,6 +732,7 @@ def serialize_dataset_job(job) -> Dict[str, object]:
         "job_id": job.job_id,
         "dataset_name": job.dataset_name,
         "workflow_id": job.workflow_id,
+        "server_url": job.server_url,
         "status": job.status,
         "total": job.total,
         "completed": job.completed,

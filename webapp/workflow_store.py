@@ -47,13 +47,12 @@ class WorkflowInfo:
 class WorkflowGroup:
     identifier: str
     input_signature: Tuple[Tuple[str, str], ...]
-    output_signature: Tuple[str, ...]
     workflows: List[WorkflowInfo]
 
     @property
     def label(self) -> str:
         input_counts = self._count_by_type(self.input_signature)
-        output_counts = self._count_by_type(tuple((item, item_type) for item_type in self.output_signature for item in [item_type]))
+        output_counts = self._count_outputs(self.workflows)
 
         input_label = self._render_counts(input_counts, default="无输入")
         output_label = self._render_counts(output_counts, default="未检测")
@@ -67,6 +66,14 @@ class WorkflowGroup:
         return counts
 
     @staticmethod
+    def _count_outputs(workflows: Sequence[WorkflowInfo]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for info in workflows:
+            for media_type in info.output_types:
+                counts[media_type] = counts.get(media_type, 0) + 1
+        return counts
+
+    @staticmethod
     def _render_counts(counts: Mapping[str, int], *, default: str) -> str:
         if not counts:
             return default
@@ -75,6 +82,11 @@ class WorkflowGroup:
             label = MEDIA_TYPE_LABELS.get(media_type, media_type)
             labels.append(f"{counts[media_type]}{label}")
         return "、".join(labels)
+
+    @property
+    def output_signature(self) -> Tuple[str, ...]:
+        collected = {media_type for info in self.workflows for media_type in info.output_types}
+        return tuple(sorted(collected))
 
 
 class WorkflowStore:
@@ -110,16 +122,20 @@ class WorkflowStore:
 
     # ------------------------------------------------------------ internal
     def _rebuild_groups(self) -> None:
-        grouped: Dict[Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]], List[WorkflowInfo]] = {}
+        grouped: Dict[Tuple[Tuple[str, str], ...], List[WorkflowInfo]] = {}
         for info in self._workflows.values():
-            key = (info.input_signature, info.output_signature)
+            key = info.input_signature
             grouped.setdefault(key, []).append(info)
 
         self._groups.clear()
-        for (input_signature, output_signature), items in grouped.items():
-            signature_blob = json.dumps({"inputs": input_signature, "outputs": output_signature}, ensure_ascii=False, sort_keys=True)
+        for input_signature, items in grouped.items():
+            signature_blob = json.dumps({"inputs": input_signature}, ensure_ascii=False, sort_keys=True)
             identifier = hashlib.sha1(signature_blob.encode("utf-8")).hexdigest()[:12]
-            self._groups[identifier] = WorkflowGroup(identifier=identifier, input_signature=input_signature, output_signature=output_signature, workflows=sorted(items, key=lambda info: info.name))
+            self._groups[identifier] = WorkflowGroup(
+                identifier=identifier,
+                input_signature=input_signature,
+                workflows=sorted(items, key=lambda info: info.name),
+            )
 
     def _inspect(self, path: Path) -> Optional[WorkflowInfo]:
         try:
