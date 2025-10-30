@@ -104,6 +104,27 @@
           </div>
           <div id="dataset-server-status" class="dataset-server-status"></div>
           <div id="dataset-placeholders" class="dataset-placeholder-list"></div>
+          <div class="dataset-prompt-panel">
+            <h3>提示词设置</h3>
+            <div class="dataset-prompt-config">
+              <label>
+                节点选择
+                <select id="dataset-prompt-field">
+                  <option value="">不修改提示词</option>
+                </select>
+              </label>
+              <label>
+                提示词内容
+                <textarea id="dataset-prompt-text" rows="4" placeholder="选择节点后可修改提示词" disabled></textarea>
+              </label>
+            </div>
+            <div class="dataset-annotation-config">
+              <label>
+                数据集提示词（写入txt）
+                <textarea id="dataset-annotation-text" rows="3" placeholder="留空则不写入"></textarea>
+              </label>
+            </div>
+          </div>
           <div id="dataset-job-status" class="dataset-job-status hidden"></div>
         </section>
         <section class="pane dataset-list-pane">

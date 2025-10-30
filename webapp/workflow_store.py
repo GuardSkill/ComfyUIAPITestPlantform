@@ -33,6 +33,7 @@ class WorkflowInfo:
     path: Path
     placeholders: List[PlaceholderInfo] = field(default_factory=list)
     output_types: List[str] = field(default_factory=list)
+    prompt_fields: List["PromptFieldInfo"] = field(default_factory=list)
 
     @property
     def input_signature(self) -> Tuple[Tuple[str, str], ...]:
@@ -87,6 +88,14 @@ class WorkflowGroup:
     def output_signature(self) -> Tuple[str, ...]:
         collected = {media_type for info in self.workflows for media_type in info.output_types}
         return tuple(sorted(collected))
+
+
+@dataclass(frozen=True)
+class PromptFieldInfo:
+    node_id: str
+    field: str
+    label: str
+    default_value: str
 
 
 class WorkflowStore:
@@ -150,6 +159,7 @@ class WorkflowStore:
             for name, usages in sorted(placeholders.items())
         ]
         output_types = sorted(self._infer_output_types(workflow))
+        prompt_fields = self._collect_prompt_fields(workflow)
         identifier = str(path.relative_to(self.root))
         name = path.stem
 
@@ -159,6 +169,7 @@ class WorkflowStore:
             path=path,
             placeholders=placeholder_infos,
             output_types=output_types,
+            prompt_fields=prompt_fields,
         )
 
     def _collect_placeholders(self, workflow: MutableMapping[str, Any]) -> Dict[str, List[PlaceholderUsage]]:
@@ -177,6 +188,40 @@ class WorkflowStore:
                     normalized = f"{{{placeholder}}}"
                     collected.setdefault(normalized, []).append((class_type, path_keys))
         return collected
+
+    def _collect_prompt_fields(self, workflow: MutableMapping[str, Any]) -> List[PromptFieldInfo]:
+        fields: List[PromptFieldInfo] = []
+        for node_id, node in workflow.items():
+            if not isinstance(node, MutableMapping):
+                continue
+            inputs = node.get("inputs")
+            if not isinstance(inputs, Mapping):
+                continue
+            for key, value in inputs.items():
+                if key.lower() not in {"prompt", "text"}:
+                    continue
+                if not isinstance(value, str):
+                    continue
+                label = self._compose_prompt_label(node, key)
+                fields.append(
+                    PromptFieldInfo(
+                        node_id=str(node_id),
+                        field=str(key),
+                        label=label,
+                        default_value=value,
+                    )
+                )
+        return fields
+
+    def _compose_prompt_label(self, node: Mapping[str, Any], field: str) -> str:
+        meta = node.get("_meta") if isinstance(node.get("_meta"), Mapping) else {}
+        title = meta.get("title") if isinstance(meta, Mapping) else None
+        class_type = node.get("class_type", "")
+        if title:
+            return f"{title} · {field}"
+        if class_type:
+            return f"{class_type} · {field}"
+        return field
 
     def _iter_paths(self, obj: Any, prefix: Tuple[str, ...] = ()) -> Iterable[Tuple[Tuple[str, ...], Any]]:
         if isinstance(obj, MutableMapping):

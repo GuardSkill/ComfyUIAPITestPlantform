@@ -795,6 +795,79 @@ button[disabled] {
   gap: 12px;
 }
 
+.dataset-prompt-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #f8f9fe;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 3px 8px rgba(31, 50, 94, 0.08);
+}
+
+.dataset-prompt-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.dataset-prompt-config label,
+.dataset-annotation-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  flex: 1;
+}
+
+.dataset-prompt-config select,
+.dataset-prompt-config textarea,
+.dataset-annotation-config textarea {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #ccd3e5;
+  resize: vertical;
+}
+
+.dataset-prompt-config textarea,
+.dataset-annotation-config textarea {
+  min-height: 90px;
+}
+
+.dataset-annotation-config textarea {
+  min-height: 70px;
+}
+
+.dataset-prompt-text-readonly {
+  background: #f1f4ff;
+  border-color: #d1d9ef;
+}
+
+.dataset-prompt-display {
+  background: #ffffff;
+  border: 1px solid #d5dcf0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #3c435a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.dataset-prompt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.dataset-prompt-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #48506d;
+}
+
 .dataset-placeholder-card {
   background: #f8f9fe;
   border-radius: 10px;

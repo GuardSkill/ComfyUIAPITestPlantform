@@ -20,6 +20,7 @@ from batch_workflow_tester import (
     BatchWorkflowTester,
     ComfyAPIClient,
     WorkflowTestCase,
+    _apply_text_inputs,
     _replace_placeholders,
     _sanitize_for_fs,
 )
@@ -75,11 +76,19 @@ class DatasetRunOptions(BaseModel):
     append: bool = False
 
 
+class PromptOverride(BaseModel):
+    node_id: str = Field(..., description="需要修改的节点ID")
+    field: str = Field(..., description="节点输入字段名称")
+    value: str = Field(..., description="要写入的提示词内容")
+
+
 class DatasetRunRequest(BaseModel):
     dataset_name: str
     workflow_id: str
     placeholders: Dict[str, List[str]]
     options: Optional[DatasetRunOptions] = None
+    prompt_overrides: Optional[List[PromptOverride]] = None
+    dataset_prompt: Optional[str] = None
 
 
 class RunBatchPayload(BaseModel):
@@ -352,15 +361,26 @@ def create_app() -> FastAPI:
                         "type": placeholder.media_type,
                     }
                 )
-            if placeholders:
-                workflows.append(
-                    {
-                        "id": info.identifier,
-                        "name": info.name,
-                        "path": str(info.path),
-                        "placeholders": placeholders,
-                    }
-                )
+            if not placeholders:
+                continue
+            prompt_fields = [
+                {
+                    "node_id": field.node_id,
+                    "field": field.field,
+                    "label": field.label,
+                    "default_value": field.default_value,
+                }
+                for field in info.prompt_fields
+            ]
+            workflows.append(
+                {
+                    "id": info.identifier,
+                    "name": info.name,
+                    "path": str(info.path),
+                    "placeholders": placeholders,
+                    "prompt_fields": prompt_fields,
+                }
+            )
         return {"workflows": workflows}
 
     @app.get("/api/media/all")
@@ -578,6 +598,18 @@ def execute_dataset_run(
 
     job_manager.mark_running(job_id, total_runs)
     job_manager.append_log(job_id, f"使用服务器：{server_url}")
+    prompt_mapping: Dict[str, Dict[str, str]] = {}
+    prompt_overrides_list: List[Dict[str, str]] = []
+    for override in payload.prompt_overrides or []:
+        text_value = (override.value or "").strip()
+        node_id = (override.node_id or "").strip()
+        field = (override.field or "").strip()
+        if not text_value or not node_id or not field:
+            continue
+        key = f"id:{node_id}"
+        prompt_mapping.setdefault(key, {})[field] = text_value
+        prompt_overrides_list.append({"node_id": node_id, "field": field, "value": text_value})
+    dataset_prompt_text = (payload.dataset_prompt or "").strip()
     try:
         for offset, pair in enumerate(pairs, start=1):
             index = last_index + offset
@@ -599,6 +631,8 @@ def execute_dataset_run(
             with workflow_info.path.open("r", encoding="utf-8") as handle:
                 workflow_data = json.load(handle)
             _replace_placeholders(workflow_data, remote_mapping)
+            if prompt_mapping:
+                _apply_text_inputs(workflow_data, prompt_mapping)
             prompt_id, history = client.execute_prompt(workflow_data)
             outputs = client.collect_outputs(history)
             asset = next((item for item in outputs if item.bucket in ("images", "videos")), None)
@@ -612,6 +646,8 @@ def execute_dataset_run(
                 asset.data,
                 convert_to_jpg=convert_output,
             )
+            if dataset_prompt_text:
+                dataset_manager.save_prompt_annotation(target_dir, index, dataset_prompt_text)
             job_manager.update_progress(job_id, offset, f"第 {offset}/{total_runs} 次运行完成")
     except Exception:
         if not dataset_pre_exists:
@@ -628,6 +664,8 @@ def execute_dataset_run(
         "placeholders": [placeholder_labels[p] for p in normalized_order],
         "placeholder_map": placeholder_labels,
         "control_slots": control_slot_map,
+        "prompt_overrides": prompt_overrides_list,
+        "dataset_prompt": dataset_prompt_text,
     }
     dataset_manager.save_metadata(dataset_name, metadata)
     return {
@@ -686,6 +724,15 @@ def serialize_workflow(workflow: WorkflowInfo) -> Dict[str, object]:
         "path": str(workflow.path),
         "placeholders": [serialize_placeholder(placeholder) for placeholder in workflow.placeholders],
         "output_types": workflow.output_types,
+        "prompt_fields": [
+            {
+                "node_id": field.node_id,
+                "field": field.field,
+                "label": field.label,
+                "default_value": field.default_value,
+            }
+            for field in workflow.prompt_fields
+        ],
     }
 
 

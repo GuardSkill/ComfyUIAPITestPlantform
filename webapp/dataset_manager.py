@@ -156,6 +156,12 @@ class DatasetManager:
             dest.write_bytes(data)
         return dest
 
+    def save_prompt_annotation(self, folder: Path, index: int, text: str) -> Path:
+        alias = f"{index:07d}"
+        dest = folder / f"{alias}.txt"
+        dest.write_text(text, encoding="utf-8")
+        return dest
+
     def collect_pairs(self, dataset_name: str) -> List[Dict[str, object]]:
         dataset_dir = self.root / dataset_name
         if not dataset_dir.exists():
@@ -173,6 +179,9 @@ class DatasetManager:
             }
             for slot_name, items in controls.get("slots", {}).items():
                 entry["controls"][slot_name] = items.get(index)
+            prompt_data = self._read_prompt_annotation(target_dir, index)
+            if prompt_data:
+                entry["prompt"] = prompt_data
             results.append(entry)
         return results
 
@@ -239,6 +248,8 @@ class DatasetManager:
                 index = int(file.stem)
             except ValueError:
                 continue
+            if file.suffix.lower() == ".txt":
+                continue
             relative = str(file.relative_to(self.root)).replace("\\", "/")
             mapping[index] = {
                 "path": relative,
@@ -246,3 +257,19 @@ class DatasetManager:
                 "url": f"/datasets/{relative}",
             }
         return mapping
+
+    def _read_prompt_annotation(self, target_dir: Path, index: int) -> Optional[Dict[str, str]]:
+        path = target_dir / f"{index:07d}.txt"
+        if not path.exists() or not path.is_file():
+            return None
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:  # pylint: disable=broad-except
+            return None
+        relative = str(path.relative_to(self.root)).replace("\\", "/")
+        return {
+            "path": relative,
+            "name": path.name,
+            "url": f"/datasets/{relative}",
+            "text": text,
+        }

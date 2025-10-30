@@ -38,6 +38,11 @@ const state = {
     jobStatus: null,
     jobPoller: null,
     serverUrl: "",
+    promptFields: [],
+    selectedPromptField: "",
+    promptOverrideText: "",
+    datasetPromptText: "",
+    datasetPromptEdited: false,
   },
 };
 
@@ -94,6 +99,9 @@ const refs = {
   datasetViewerClose: document.getElementById("dataset-viewer-close"),
   datasetViewerContent: document.getElementById("dataset-viewer-content"),
   datasetJobStatus: document.getElementById("dataset-job-status"),
+  datasetPromptField: document.getElementById("dataset-prompt-field"),
+  datasetPromptText: document.getElementById("dataset-prompt-text"),
+  datasetAnnotationText: document.getElementById("dataset-annotation-text"),
   datasetServerStatus: document.getElementById("dataset-server-status"),
   workflowTree: document.getElementById("workflow-tree"),
   workflowUploadInput: document.getElementById("workflow-upload-input"),
@@ -799,12 +807,17 @@ async function loadDatasetWorkflows() {
       state.dataset.selectedWorkflowId = null;
       state.dataset.placeholders = [];
       state.dataset.placeholderSelections = {};
-    } else if (!previous || !state.dataset.workflows.some((item) => item.id === previous)) {
-      state.dataset.selectedWorkflowId = state.dataset.workflows[0].id;
-      state.dataset.placeholders = state.dataset.workflows[0].placeholders || [];
-      state.dataset.placeholderSelections = {};
+      state.dataset.promptFields = [];
+      state.dataset.selectedPromptField = "";
+      state.dataset.promptOverrideText = "";
+      state.dataset.datasetPromptText = "";
+      state.dataset.datasetPromptEdited = false;
+      renderDatasetBuilder();
+      return;
     }
-    renderDatasetBuilder();
+    const hasPrevious = previous && state.dataset.workflows.some((item) => item.id === previous);
+    const nextWorkflowId = hasPrevious ? previous : state.dataset.workflows[0].id;
+    setDatasetWorkflow(nextWorkflowId);
   } catch (error) {
     showToast(`加载数据集工作流失败：${error.message}`);
   }
@@ -813,6 +826,7 @@ async function loadDatasetWorkflows() {
 function renderDatasetBuilder() {
   renderDatasetWorkflowOptions();
   renderDatasetPlaceholderList();
+  renderDatasetPromptControls();
   updateDatasetRunButton();
   if (refs.datasetNameInput) {
     refs.datasetNameInput.value = state.dataset.datasetName;
@@ -830,7 +844,13 @@ function renderDatasetBuilder() {
     state.dataset.datasets.forEach((dataset) => {
       const option = document.createElement("option");
       option.value = dataset.name;
-      option.textContent = `${dataset.name} (${dataset.total_runs || 0} 条)`;
+      const actualRuns = dataset.total_runs || 0;
+      const recordedRuns = dataset.recorded_runs ?? dataset.total_runs ?? 0;
+      const label =
+        recordedRuns && recordedRuns !== actualRuns
+          ? `${dataset.name} (${actualRuns} 条 · 记录 ${recordedRuns})`
+          : `${dataset.name} (${actualRuns} 条)`;
+      option.textContent = label;
       if (dataset.name === state.dataset.appendTarget) {
         option.selected = true;
       }
@@ -868,6 +888,7 @@ function renderDatasetWorkflowOptions() {
 }
 
 function setDatasetWorkflow(workflowId) {
+  const previousWorkflowId = state.dataset.selectedWorkflowId;
   state.dataset.selectedWorkflowId = workflowId || null;
   const workflow = state.dataset.workflows.find((item) => item.id === workflowId);
   if (workflow) {
@@ -878,9 +899,26 @@ function setDatasetWorkflow(workflowId) {
       selections[key] = state.dataset.placeholderSelections[key] || [];
     });
     state.dataset.placeholderSelections = selections;
+    state.dataset.promptFields = workflow.prompt_fields || [];
+    const currentSelectionValid =
+      state.dataset.selectedPromptField &&
+      state.dataset.promptFields.some((item) => `${item.node_id}:${item.field}` === state.dataset.selectedPromptField);
+    if (!currentSelectionValid || previousWorkflowId !== workflowId) {
+      state.dataset.selectedPromptField = "";
+      state.dataset.promptOverrideText = "";
+    }
+    if (previousWorkflowId !== workflowId) {
+      state.dataset.datasetPromptText = "";
+      state.dataset.datasetPromptEdited = false;
+    }
   } else {
     state.dataset.placeholders = [];
     state.dataset.placeholderSelections = {};
+    state.dataset.promptFields = [];
+    state.dataset.selectedPromptField = "";
+    state.dataset.promptOverrideText = "";
+    state.dataset.datasetPromptText = "";
+    state.dataset.datasetPromptEdited = false;
   }
   renderDatasetBuilder();
 }
@@ -968,6 +1006,91 @@ function renderDatasetPlaceholderList() {
   });
 }
 
+function renderDatasetPromptControls() {
+  if (!refs.datasetPromptField || !refs.datasetPromptText || !refs.datasetAnnotationText) {
+    return;
+  }
+  const fields = state.dataset.promptFields || [];
+  const select = refs.datasetPromptField;
+  select.innerHTML = "";
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = fields.length ? "不修改提示词" : "当前工作流暂无可修改提示词";
+  select.appendChild(defaultOption);
+  fields.forEach((field) => {
+    const option = document.createElement("option");
+    const value = `${field.node_id}:${field.field}`;
+    option.value = value;
+    option.textContent = field.label || value;
+    option.dataset.defaultValue = field.default_value || "";
+    if (value === state.dataset.selectedPromptField) {
+      option.selected = true;
+    }
+    select.appendChild(option);
+  });
+
+  if (state.dataset.selectedPromptField) {
+    select.value = state.dataset.selectedPromptField;
+  }
+
+  const textarea = refs.datasetPromptText;
+  const hasSelection = Boolean(state.dataset.selectedPromptField);
+  textarea.disabled = !hasSelection;
+  textarea.classList.toggle("dataset-prompt-text-readonly", !hasSelection);
+  textarea.placeholder = hasSelection
+    ? "输入自定义提示词"
+    : fields.length
+    ? "选择节点后可修改提示词"
+    : "当前工作流无可修改提示词";
+  textarea.value = state.dataset.promptOverrideText || "";
+
+  const annotation = refs.datasetAnnotationText;
+  annotation.value = state.dataset.datasetPromptText || "";
+}
+
+function handleDatasetPromptFieldChange(event) {
+  const value = event.target.value;
+  if (!value) {
+    state.dataset.selectedPromptField = "";
+    state.dataset.promptOverrideText = "";
+    renderDatasetPromptControls();
+    return;
+  }
+  const field = state.dataset.promptFields.find((item) => `${item.node_id}:${item.field}` === value);
+  state.dataset.selectedPromptField = value;
+  const defaultValue = field?.default_value || "";
+  state.dataset.promptOverrideText = defaultValue;
+  if (!state.dataset.datasetPromptEdited) {
+    state.dataset.datasetPromptText = defaultValue;
+    if (refs.datasetAnnotationText) {
+      refs.datasetAnnotationText.value = defaultValue;
+    }
+    state.dataset.datasetPromptEdited = false;
+  }
+  renderDatasetPromptControls();
+}
+
+function handleDatasetPromptTextInput(event) {
+  if (!state.dataset.selectedPromptField) {
+    event.target.value = "";
+    return;
+  }
+  const value = event.target.value;
+  state.dataset.promptOverrideText = value;
+  if (!state.dataset.datasetPromptEdited) {
+    state.dataset.datasetPromptText = value;
+    if (refs.datasetAnnotationText && refs.datasetAnnotationText !== event.target) {
+      refs.datasetAnnotationText.value = value;
+    }
+  }
+}
+
+function handleDatasetAnnotationInput(event) {
+  const value = event.target.value;
+  state.dataset.datasetPromptText = value;
+  state.dataset.datasetPromptEdited = Boolean(value.trim());
+}
+
 function updateDatasetRunButton() {
   if (!refs.datasetRunButton) {
     return;
@@ -999,6 +1122,15 @@ async function runDataset() {
     showToast("请先在数据集服务器地址中填写可用的 ComfyUI 地址");
     return;
   }
+  const promptOverrides = [];
+  if (state.dataset.selectedPromptField && state.dataset.promptOverrideText.trim()) {
+    const [nodeId, ...rest] = state.dataset.selectedPromptField.split(":");
+    const field = rest.join(":");
+    if (nodeId && field) {
+      promptOverrides.push({ node_id: nodeId, field, value: state.dataset.promptOverrideText });
+    }
+  }
+  const datasetPrompt = state.dataset.datasetPromptText?.trim();
   const payload = {
     dataset_name: targetDatasetName,
     workflow_id: state.dataset.selectedWorkflowId,
@@ -1021,6 +1153,12 @@ async function runDataset() {
   if (!Object.keys(payload.placeholders).length) {
     showToast("请为每个输入占位符选择至少一个素材");
     return;
+  }
+  if (promptOverrides.length) {
+    payload.prompt_overrides = promptOverrides;
+  }
+  if (datasetPrompt) {
+    payload.dataset_prompt = datasetPrompt;
   }
   showToast("正在创建数据集任务...");
   state.dataset.isRunning = true;
@@ -1270,7 +1408,11 @@ function renderDatasetViewer(datasetName) {
   const actualRuns =
     typeof metadata.actual_runs === "number" ? metadata.actual_runs : state.dataset.datasetPairs.length;
   const recordedRuns =
-    typeof metadata.total_runs === "number" ? metadata.total_runs : metadata.totalCount || actualRuns;
+    typeof metadata.recorded_runs === "number"
+      ? metadata.recorded_runs
+      : typeof metadata.total_runs === "number"
+      ? metadata.total_runs
+      : metadata.totalCount || actualRuns;
   const summary = document.createElement("p");
   summary.className = "dataset-empty";
   summary.textContent =
@@ -1316,6 +1458,19 @@ function renderDatasetViewer(datasetName) {
       mediaRow.appendChild(createDatasetMediaThumb(pair.target, "target"));
     }
     card.appendChild(mediaRow);
+    if (pair.prompt && pair.prompt.text) {
+      const promptSection = document.createElement("div");
+      promptSection.className = "dataset-prompt-section";
+      const promptLabel = document.createElement("span");
+      promptLabel.className = "dataset-prompt-label";
+      promptLabel.textContent = "提示词";
+      const promptBlock = document.createElement("pre");
+      promptBlock.className = "dataset-prompt-display";
+      promptBlock.textContent = pair.prompt.text;
+      promptSection.appendChild(promptLabel);
+      promptSection.appendChild(promptBlock);
+      card.appendChild(promptSection);
+    }
     refs.datasetViewerContent.appendChild(card);
   });
 }
@@ -2126,6 +2281,9 @@ function setupEventListeners() {
     }
     updateDatasetRunButton();
   });
+  refs.datasetPromptField?.addEventListener("change", (event) => handleDatasetPromptFieldChange(event));
+  refs.datasetPromptText?.addEventListener("input", (event) => handleDatasetPromptTextInput(event));
+  refs.datasetAnnotationText?.addEventListener("input", (event) => handleDatasetAnnotationInput(event));
 
   refs.workflowUploadButton?.addEventListener("click", () => {
     refs.workflowUploadInput?.click();
