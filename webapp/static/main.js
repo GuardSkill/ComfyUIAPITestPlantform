@@ -43,6 +43,14 @@ const state = {
     promptOverrideText: "",
     datasetPromptText: "",
     datasetPromptEdited: false,
+    workflowTreeExpanded: new Set(),
+    workflowTreeSelectionPath: "",
+    workflowTreeSelectionId: "",
+    workflowTreeSelectionName: "",
+    workflowIdSet: new Set(),
+    editingPromptIndex: null,
+    editingPromptText: "",
+    promptSaving: false,
   },
 };
 
@@ -86,7 +94,6 @@ const refs = {
   modalUploadInput: document.getElementById("modal-upload-input"),
   resultsModal: document.getElementById("results-modal"),
   resultsModalContent: document.getElementById("results-modal-content"),
-  datasetWorkflowSelect: document.getElementById("dataset-workflow"),
   datasetNameInput: document.getElementById("dataset-name"),
   datasetAppendToggle: document.getElementById("dataset-append-toggle"),
   datasetExistingSelect: document.getElementById("dataset-existing-select"),
@@ -98,10 +105,20 @@ const refs = {
   datasetViewerTitle: document.getElementById("dataset-viewer-title"),
   datasetViewerClose: document.getElementById("dataset-viewer-close"),
   datasetViewerContent: document.getElementById("dataset-viewer-content"),
+  datasetImageModal: document.getElementById("dataset-image-modal"),
+  datasetImageContent: document.getElementById("dataset-image-content"),
+  datasetImageCaption: document.getElementById("dataset-image-caption"),
   datasetJobStatus: document.getElementById("dataset-job-status"),
   datasetPromptField: document.getElementById("dataset-prompt-field"),
   datasetPromptText: document.getElementById("dataset-prompt-text"),
   datasetAnnotationText: document.getElementById("dataset-annotation-text"),
+  datasetWorkflowDisplay: document.getElementById("dataset-workflow-display"),
+  datasetWorkflowOpen: document.getElementById("dataset-workflow-open"),
+  datasetWorkflowRefresh: document.getElementById("dataset-workflow-refresh"),
+  datasetWorkflowModal: document.getElementById("dataset-workflow-modal"),
+  datasetWorkflowTree: document.getElementById("dataset-workflow-tree"),
+  datasetWorkflowConfirm: document.getElementById("dataset-workflow-confirm"),
+  datasetWorkflowCancel: document.getElementById("dataset-workflow-cancel"),
   datasetServerStatus: document.getElementById("dataset-server-status"),
   workflowTree: document.getElementById("workflow-tree"),
   workflowUploadInput: document.getElementById("workflow-upload-input"),
@@ -113,7 +130,8 @@ const refs = {
 };
 
 function updateOverlayVisibility() {
-  const shouldShow = !refs.mediaModal.classList.contains("hidden") || !refs.resultsModal.classList.contains("hidden");
+  const modals = [refs.mediaModal, refs.resultsModal, refs.datasetWorkflowModal, refs.datasetImageModal];
+  const shouldShow = modals.some((modal) => modal && !modal.classList.contains("hidden"));
   if (shouldShow) {
     refs.overlay.classList.remove("hidden");
   } else {
@@ -626,7 +644,19 @@ function renderWorkflows(group) {
     item.appendChild(label);
 
     const meta = document.createElement("small");
-    meta.textContent = workflow.output_types.length ? `输出：${workflow.output_types.join(" / ")}` : "输出类型未知";
+    const metaParts = [];
+    if (workflow.output_types && workflow.output_types.length) {
+      metaParts.push(`输出：${workflow.output_types.join(" / ")}`);
+    } else {
+      metaParts.push("输出类型未知");
+    }
+    if (workflow.auto_placeholders && workflow.auto_placeholders.length) {
+      const autoText = workflow.auto_placeholders
+        .map((entry) => `${entry.name}=${entry.value}`)
+        .join("，");
+      metaParts.push(`自动参数：${autoText}`);
+    }
+    meta.textContent = metaParts.join(" · ");
     item.appendChild(meta);
 
     refs.workflowList.appendChild(item);
@@ -803,6 +833,7 @@ async function loadDatasetWorkflows() {
     const { workflows } = await fetchJSON("/api/dataset/workflows");
     const previous = state.dataset.selectedWorkflowId;
     state.dataset.workflows = workflows || [];
+    state.dataset.workflowIdSet = new Set((state.dataset.workflows || []).map((item) => item.id));
     if (!state.dataset.workflows.length) {
       state.dataset.selectedWorkflowId = null;
       state.dataset.placeholders = [];
@@ -812,6 +843,7 @@ async function loadDatasetWorkflows() {
       state.dataset.promptOverrideText = "";
       state.dataset.datasetPromptText = "";
       state.dataset.datasetPromptEdited = false;
+      state.dataset.workflowIdSet = new Set();
       renderDatasetBuilder();
       return;
     }
@@ -824,7 +856,7 @@ async function loadDatasetWorkflows() {
 }
 
 function renderDatasetBuilder() {
-  renderDatasetWorkflowOptions();
+  updateDatasetWorkflowDisplay();
   renderDatasetPlaceholderList();
   renderDatasetPromptControls();
   updateDatasetRunButton();
@@ -866,25 +898,19 @@ function renderDatasetBuilder() {
   renderDatasetJobStatus();
 }
 
-function renderDatasetWorkflowOptions() {
-  if (!refs.datasetWorkflowSelect) {
+function updateDatasetWorkflowDisplay() {
+  if (!refs.datasetWorkflowDisplay) {
     return;
   }
-  refs.datasetWorkflowSelect.innerHTML = "";
-  const defaultOption = document.createElement("option");
-  defaultOption.value = "";
-  defaultOption.textContent = "请选择需要批量运行的工作流";
-  refs.datasetWorkflowSelect.appendChild(defaultOption);
-  state.dataset.workflows.forEach((workflow) => {
-    const option = document.createElement("option");
-    option.value = workflow.id;
-    option.textContent = workflow.name;
-    if (workflow.id === state.dataset.selectedWorkflowId) {
-      option.selected = true;
-    }
-    refs.datasetWorkflowSelect.appendChild(option);
-  });
-  refs.datasetWorkflowSelect.value = state.dataset.selectedWorkflowId || "";
+  const workflow = state.dataset.workflows.find((item) => item.id === state.dataset.selectedWorkflowId);
+  if (workflow) {
+    refs.datasetWorkflowDisplay.value = workflow.name;
+  } else {
+    refs.datasetWorkflowDisplay.value = "";
+  }
+  refs.datasetWorkflowDisplay.placeholder = state.dataset.workflows.length
+    ? "请选择需要批量运行的工作流"
+    : "暂无可用工作流";
 }
 
 function setDatasetWorkflow(workflowId) {
@@ -900,6 +926,12 @@ function setDatasetWorkflow(workflowId) {
     });
     state.dataset.placeholderSelections = selections;
     state.dataset.promptFields = workflow.prompt_fields || [];
+    state.dataset.workflowTreeSelectionId = workflow.id;
+    state.dataset.workflowTreeSelectionName = workflow.name;
+    const workflowPath = getWorkflowTreePathById(workflow.id);
+    if (workflowPath) {
+      state.dataset.workflowTreeSelectionPath = workflowPath;
+    }
     const currentSelectionValid =
       state.dataset.selectedPromptField &&
       state.dataset.promptFields.some((item) => `${item.node_id}:${item.field}` === state.dataset.selectedPromptField);
@@ -919,6 +951,9 @@ function setDatasetWorkflow(workflowId) {
     state.dataset.promptOverrideText = "";
     state.dataset.datasetPromptText = "";
     state.dataset.datasetPromptEdited = false;
+    state.dataset.workflowTreeSelectionId = "";
+    state.dataset.workflowTreeSelectionName = "";
+    state.dataset.workflowTreeSelectionPath = "";
   }
   renderDatasetBuilder();
 }
@@ -940,7 +975,23 @@ function renderDatasetPlaceholderList() {
     hint.className = "dataset-empty";
     hint.textContent = "该工作流未检测到可替换的输入。";
     refs.datasetPlaceholderContainer.appendChild(hint);
+    const workflow = state.dataset.workflows.find((item) => item.id === state.dataset.selectedWorkflowId);
+    if (workflow && workflow.auto_placeholders && workflow.auto_placeholders.length) {
+      const note = document.createElement("p");
+      note.className = "dataset-placeholder-note";
+      const autoText = workflow.auto_placeholders.map((entry) => `${entry.name}=${entry.value}`).join("，");
+      note.textContent = `自动参数：${autoText}`;
+      refs.datasetPlaceholderContainer.appendChild(note);
+    }
     return;
+  }
+  const workflow = state.dataset.workflows.find((item) => item.id === state.dataset.selectedWorkflowId);
+  if (workflow && workflow.auto_placeholders && workflow.auto_placeholders.length) {
+    const note = document.createElement("p");
+    note.className = "dataset-placeholder-note";
+    const autoText = workflow.auto_placeholders.map((entry) => `${entry.name}=${entry.value}`).join("，");
+    note.textContent = `自动参数：${autoText}`;
+    refs.datasetPlaceholderContainer.appendChild(note);
   }
   state.dataset.placeholders.forEach((placeholder) => {
     const key = normalizePlaceholderKey(placeholder.name);
@@ -1004,6 +1055,258 @@ function renderDatasetPlaceholderList() {
     card.appendChild(list);
     refs.datasetPlaceholderContainer.appendChild(card);
   });
+}
+
+function getDatasetWorkflowById(id) {
+  if (!id) {
+    return null;
+  }
+  return state.dataset.workflows.find((item) => item.id === id) || null;
+}
+
+function getWorkflowTreePathById(id) {
+  if (!id || !state.workflowNodeMeta) {
+    return "";
+  }
+  for (const meta of state.workflowNodeMeta.values()) {
+    const node = meta?.node;
+    if (node && node.workflow && node.workflow.id === id) {
+      return node.path || "";
+    }
+  }
+  return "";
+}
+
+function expandDatasetWorkflowAncestors(path) {
+  if (!path || !state.workflowNodeMeta) {
+    return;
+  }
+  if (!(state.dataset.workflowTreeExpanded instanceof Set)) {
+    state.dataset.workflowTreeExpanded = new Set();
+  }
+  let current = path;
+  while (current) {
+    const meta = state.workflowNodeMeta.get(current);
+    if (!meta) {
+      break;
+    }
+    const node = meta.node;
+    if (node) {
+      state.dataset.workflowTreeExpanded.add(getNodeKey(node));
+    }
+    current = meta.parent || "";
+  }
+  state.dataset.workflowTreeExpanded.add(TREE_ROOT_KEY);
+}
+
+async function openDatasetWorkflowModal() {
+  if (!refs.datasetWorkflowModal) {
+    return;
+  }
+  if (!state.workflowTree) {
+    await loadWorkflowTree();
+  }
+  if (!state.dataset.workflows.length) {
+    await loadDatasetWorkflows();
+  }
+  if (!(state.dataset.workflowTreeExpanded instanceof Set)) {
+    state.dataset.workflowTreeExpanded = new Set();
+  }
+  if (!state.dataset.workflowTreeExpanded.size) {
+    state.dataset.workflowTreeExpanded.add(TREE_ROOT_KEY);
+  }
+  const initialId = state.dataset.selectedWorkflowId;
+  const initialPath = getWorkflowTreePathById(initialId);
+  state.dataset.workflowTreeSelectionId = initialId || "";
+  state.dataset.workflowTreeSelectionPath = initialPath || "";
+  const workflow = getDatasetWorkflowById(initialId);
+  state.dataset.workflowTreeSelectionName = workflow ? workflow.name : "";
+  if (initialPath) {
+    expandDatasetWorkflowAncestors(initialPath);
+  }
+  refs.datasetWorkflowModal.classList.remove("hidden");
+  renderDatasetWorkflowTree();
+  updateOverlayVisibility();
+}
+
+function closeDatasetWorkflowModal() {
+  if (!refs.datasetWorkflowModal) {
+    return;
+  }
+  refs.datasetWorkflowModal.classList.add("hidden");
+  updateOverlayVisibility();
+}
+
+async function refreshDatasetWorkflowTree() {
+  await loadWorkflowTree();
+  await loadDatasetWorkflows();
+  if (refs.datasetWorkflowModal && !refs.datasetWorkflowModal.classList.contains("hidden")) {
+    const selectedId = state.dataset.workflowTreeSelectionId || state.dataset.selectedWorkflowId;
+    const path = getWorkflowTreePathById(selectedId);
+    if (path) {
+      expandDatasetWorkflowAncestors(path);
+      state.dataset.workflowTreeSelectionPath = path;
+    }
+    renderDatasetWorkflowTree();
+  }
+  showToast("工作流列表已刷新");
+}
+
+function toggleDatasetWorkflowNode(key) {
+  if (!(state.dataset.workflowTreeExpanded instanceof Set)) {
+    state.dataset.workflowTreeExpanded = new Set();
+  }
+  if (state.dataset.workflowTreeExpanded.has(key)) {
+    state.dataset.workflowTreeExpanded.delete(key);
+  } else {
+    state.dataset.workflowTreeExpanded.add(key);
+  }
+  renderDatasetWorkflowTree();
+}
+
+function renderDatasetWorkflowTree() {
+  if (!refs.datasetWorkflowTree) {
+    return;
+  }
+  refs.datasetWorkflowTree.innerHTML = "";
+  const tree = state.workflowTree;
+  if (!tree) {
+    const empty = document.createElement("p");
+    empty.className = "empty-hint";
+    empty.textContent = "暂无工作流";
+    refs.datasetWorkflowTree.appendChild(empty);
+    return;
+  }
+  if (!(state.dataset.workflowTreeExpanded instanceof Set)) {
+    state.dataset.workflowTreeExpanded = new Set([TREE_ROOT_KEY]);
+  }
+  const list = document.createElement("ul");
+  (tree.children || []).forEach((child) => {
+    const node = buildDatasetWorkflowTreeNode(child, 0);
+    if (node) {
+      list.appendChild(node);
+    }
+  });
+  if (list.childElementCount) {
+    refs.datasetWorkflowTree.appendChild(list);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "empty-hint";
+    empty.textContent = "未找到可用工作流";
+    refs.datasetWorkflowTree.appendChild(empty);
+  }
+}
+
+function buildDatasetWorkflowTreeNode(node, depth) {
+  const li = document.createElement("li");
+  const row = document.createElement("div");
+  row.className = "dataset-tree-row";
+  row.style.paddingLeft = `${depth * 18}px`;
+
+  const key = getNodeKey(node);
+  if (node.is_dir) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "dataset-tree-toggle";
+    const expanded = state.dataset.workflowTreeExpanded.has(key);
+    toggle.textContent = expanded ? "▾" : "▸";
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleDatasetWorkflowNode(key);
+    });
+    row.appendChild(toggle);
+  } else {
+    const spacer = document.createElement("span");
+    spacer.style.display = "inline-block";
+    spacer.style.width = "18px";
+    row.appendChild(spacer);
+  }
+
+  const workflowNode = node.workflow && node.workflow.id ? node.workflow : null;
+  let workflowInfo = null;
+  if (workflowNode) {
+    workflowInfo = getDatasetWorkflowById(workflowNode.id);
+  }
+  const isSelectable = Boolean(workflowNode && workflowInfo);
+
+  if (workflowNode) {
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.className = "dataset-tree-radio";
+    radio.name = "dataset-workflow-selection";
+    radio.checked = state.dataset.workflowTreeSelectionPath === (node.path || "");
+    radio.disabled = !isSelectable;
+    row.appendChild(radio);
+  } else {
+    const spacer = document.createElement("span");
+    spacer.style.width = "14px";
+    row.appendChild(spacer);
+  }
+
+  const label = document.createElement("span");
+  label.className = "dataset-tree-name";
+  label.textContent = node.name || (node.is_dir ? "(目录)" : node.path || "");
+  if (isSelectable && workflowInfo?.path) {
+    const hint = document.createElement("small");
+    hint.textContent = workflowInfo.path.replace(/^.*\//, "");
+    label.appendChild(hint);
+  }
+  row.appendChild(label);
+
+  if (workflowNode && !isSelectable) {
+    row.classList.add("dataset-tree-disabled");
+  }
+  if (workflowNode && state.dataset.workflowTreeSelectionPath === (node.path || "")) {
+    row.classList.add("dataset-tree-selected");
+  }
+
+  if (node.is_dir) {
+    row.addEventListener("click", () => {
+      toggleDatasetWorkflowNode(key);
+    });
+  } else if (workflowNode) {
+    row.addEventListener("click", () => {
+      if (!isSelectable) {
+        return;
+      }
+      state.dataset.workflowTreeSelectionPath = node.path || "";
+      state.dataset.workflowTreeSelectionId = workflowNode.id;
+      state.dataset.workflowTreeSelectionName = workflowInfo?.name || workflowNode.name || node.name || "";
+      renderDatasetWorkflowTree();
+    });
+  }
+
+  li.appendChild(row);
+
+  if (node.is_dir) {
+    const expanded = state.dataset.workflowTreeExpanded.has(key);
+    if (expanded) {
+      const children = document.createElement("ul");
+      (node.children || []).forEach((child) => {
+        const childNode = buildDatasetWorkflowTreeNode(child, depth + 1);
+        if (childNode) {
+          children.appendChild(childNode);
+        }
+      });
+      li.appendChild(children);
+    }
+  }
+
+  return li;
+}
+
+function confirmDatasetWorkflowSelection() {
+  const selectedId = state.dataset.workflowTreeSelectionId;
+  if (!selectedId) {
+    showToast("请先选择一个工作流");
+    return;
+  }
+  closeDatasetWorkflowModal();
+  setDatasetWorkflow(selectedId);
+  updateDatasetWorkflowDisplay();
+  if (state.dataset.workflowTreeSelectionName) {
+    showToast(`已选择工作流：${state.dataset.workflowTreeSelectionName}`);
+  }
 }
 
 function renderDatasetPromptControls() {
@@ -1391,6 +1694,9 @@ async function viewDataset(datasetName) {
         refs.datasetNameInput.value = datasetName;
       }
     }
+    state.dataset.editingPromptIndex = null;
+    state.dataset.editingPromptText = "";
+    state.dataset.promptSaving = false;
     renderDatasetViewer(datasetName);
   } catch (error) {
     showToast(`加载数据集详情失败：${error.message}`);
@@ -1420,6 +1726,12 @@ function renderDatasetViewer(datasetName) {
       ? `累计 ${actualRuns} 条数据（记录 ${recordedRuns} 条）`
       : `累计 ${actualRuns} 条数据`;
   refs.datasetViewerContent.appendChild(summary);
+  const availableIndices = new Set((state.dataset.datasetPairs || []).map((item) => item.index));
+  if (state.dataset.editingPromptIndex !== null && !availableIndices.has(state.dataset.editingPromptIndex)) {
+    state.dataset.editingPromptIndex = null;
+    state.dataset.editingPromptText = "";
+    state.dataset.promptSaving = false;
+  }
   const placeholderLabels = metadata.placeholder_map || {};
   const controlSlots = metadata.control_slots || {};
   const slotLabelMap = {};
@@ -1458,19 +1770,80 @@ function renderDatasetViewer(datasetName) {
       mediaRow.appendChild(createDatasetMediaThumb(pair.target, "target"));
     }
     card.appendChild(mediaRow);
-    if (pair.prompt && pair.prompt.text) {
-      const promptSection = document.createElement("div");
-      promptSection.className = "dataset-prompt-section";
-      const promptLabel = document.createElement("span");
-      promptLabel.className = "dataset-prompt-label";
-      promptLabel.textContent = "提示词";
+    const promptSection = document.createElement("div");
+    promptSection.className = "dataset-prompt-section";
+    promptSection.dataset.index = String(pair.index);
+    const promptHeader = document.createElement("div");
+    promptHeader.className = "dataset-prompt-header";
+    const promptLabel = document.createElement("span");
+    promptLabel.className = "dataset-prompt-label";
+    promptLabel.textContent = "提示词";
+    promptHeader.appendChild(promptLabel);
+    const promptActions = document.createElement("div");
+    promptActions.className = "dataset-prompt-actions";
+    promptHeader.appendChild(promptActions);
+    const promptBody = document.createElement("div");
+    promptBody.className = "dataset-prompt-body";
+    const isEditing = state.dataset.editingPromptIndex === pair.index;
+    if (isEditing) {
+      const textarea = document.createElement("textarea");
+      textarea.className = "dataset-prompt-editor";
+      textarea.rows = 4;
+      textarea.dataset.role = "prompt-editor";
+      textarea.dataset.index = String(pair.index);
+      textarea.value = state.dataset.editingPromptText ?? pair.prompt?.text ?? "";
+      textarea.addEventListener("input", (event) => {
+        state.dataset.editingPromptText = event.target.value;
+      });
+      promptBody.appendChild(textarea);
+      const helper = document.createElement("p");
+      helper.className = "dataset-prompt-helper";
+      helper.textContent = "留空后保存可删除该提示词。";
+      promptBody.appendChild(helper);
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "primary";
+      saveBtn.dataset.action = "save-prompt";
+      saveBtn.dataset.index = String(pair.index);
+      saveBtn.textContent = state.dataset.promptSaving ? "保存中..." : "保存";
+      saveBtn.disabled = state.dataset.promptSaving;
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.dataset.action = "cancel-prompt";
+      cancelBtn.dataset.index = String(pair.index);
+      cancelBtn.textContent = "取消";
+      promptActions.appendChild(saveBtn);
+      promptActions.appendChild(cancelBtn);
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      }, 0);
+    } else if (pair.prompt && pair.prompt.text) {
       const promptBlock = document.createElement("pre");
       promptBlock.className = "dataset-prompt-display";
       promptBlock.textContent = pair.prompt.text;
-      promptSection.appendChild(promptLabel);
-      promptSection.appendChild(promptBlock);
-      card.appendChild(promptSection);
+      promptBody.appendChild(promptBlock);
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.dataset.action = "edit-prompt";
+      editBtn.dataset.index = String(pair.index);
+      editBtn.textContent = "编辑";
+      promptActions.appendChild(editBtn);
+    } else {
+      const placeholder = document.createElement("span");
+      placeholder.className = "dataset-prompt-placeholder";
+      placeholder.textContent = "暂无提示词";
+      promptBody.appendChild(placeholder);
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.dataset.action = "edit-prompt";
+      addBtn.dataset.index = String(pair.index);
+      addBtn.textContent = "添加提示词";
+      promptActions.appendChild(addBtn);
     }
+    promptSection.appendChild(promptHeader);
+    promptSection.appendChild(promptBody);
+    card.appendChild(promptSection);
     refs.datasetViewerContent.appendChild(card);
   });
 }
@@ -1490,14 +1863,15 @@ function createDatasetMediaThumb(entry, label) {
   }
   const url = entry.url ? encodeURI(entry.url) : `/datasets/${entry.path}`;
   if (isImagePath(entry.path || entry.name)) {
-    const link = document.createElement("a");
-    link.href = url;
-    link.target = "_blank";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "dataset-image-trigger";
+    button.addEventListener("click", () => openDatasetImageModal(entry, label));
     const img = document.createElement("img");
     img.src = url;
     img.alt = entry.name;
-    link.appendChild(img);
-    wrapper.appendChild(link);
+    button.appendChild(img);
+    wrapper.appendChild(button);
   } else if (isVideoPath(entry.path || entry.name)) {
     const video = document.createElement("video");
     video.src = url;
@@ -1513,6 +1887,44 @@ function createDatasetMediaThumb(entry, label) {
     wrapper.appendChild(link);
   }
   return wrapper;
+}
+
+function openDatasetImageModal(entry, label) {
+  if (!refs.datasetImageModal || !refs.datasetImageContent) {
+    return;
+  }
+  const url = entry.url ? encodeURI(entry.url) : `/datasets/${entry.path}`;
+  refs.datasetImageContent.innerHTML = "";
+  const img = document.createElement("img");
+  img.src = url;
+  img.alt = entry.name || label || "dataset-preview";
+  refs.datasetImageContent.appendChild(img);
+  if (refs.datasetImageCaption) {
+    const fragments = [];
+    if (label) {
+      fragments.push(label);
+    }
+    if (entry.name) {
+      fragments.push(entry.name);
+    }
+    refs.datasetImageCaption.textContent = fragments.join(" · ");
+  }
+  refs.datasetImageModal.classList.remove("hidden");
+  updateOverlayVisibility();
+}
+
+function closeDatasetImageModal() {
+  if (!refs.datasetImageModal) {
+    return;
+  }
+  refs.datasetImageModal.classList.add("hidden");
+  if (refs.datasetImageContent) {
+    refs.datasetImageContent.innerHTML = "";
+  }
+  if (refs.datasetImageCaption) {
+    refs.datasetImageCaption.textContent = "";
+  }
+  updateOverlayVisibility();
 }
 
 async function deleteDataset(name) {
@@ -2270,9 +2682,6 @@ function setupEventListeners() {
     updateDatasetServerStatus();
   });
 
-  refs.datasetWorkflowSelect?.addEventListener("change", (event) => {
-    setDatasetWorkflow(event.target.value);
-  });
 
   refs.datasetNameInput?.addEventListener("input", (event) => {
     state.dataset.datasetName = event.target.value.trim();
@@ -2284,6 +2693,12 @@ function setupEventListeners() {
   refs.datasetPromptField?.addEventListener("change", (event) => handleDatasetPromptFieldChange(event));
   refs.datasetPromptText?.addEventListener("input", (event) => handleDatasetPromptTextInput(event));
   refs.datasetAnnotationText?.addEventListener("input", (event) => handleDatasetAnnotationInput(event));
+  refs.datasetWorkflowOpen?.addEventListener("click", openDatasetWorkflowModal);
+  refs.datasetWorkflowRefresh?.addEventListener("click", refreshDatasetWorkflowTree);
+  refs.datasetWorkflowConfirm?.addEventListener("click", confirmDatasetWorkflowSelection);
+  refs.datasetWorkflowCancel?.addEventListener("click", () => {
+    closeDatasetWorkflowModal();
+  });
 
   refs.workflowUploadButton?.addEventListener("click", () => {
     refs.workflowUploadInput?.click();
@@ -2305,9 +2720,6 @@ function setupEventListeners() {
     selectAllTreeWorkflows();
   });
 
-  refs.datasetWorkflowSelect?.addEventListener("change", (event) => {
-    setDatasetWorkflow(event.target.value);
-  });
 
   refs.datasetNameInput?.addEventListener("input", (event) => {
     state.dataset.datasetName = event.target.value.trim();
@@ -2463,6 +2875,64 @@ function setupEventListeners() {
           deleteDatasetPairRequest(datasetName, index);
         }
       }
+      return;
+    }
+    const datasetName = state.dataset.selectedDataset?.dataset_name;
+    const index = Number(button.dataset.index);
+    if (!datasetName || Number.isNaN(index)) {
+      return;
+    }
+    if (button.dataset.action === "edit-prompt") {
+      const pair = state.dataset.datasetPairs.find((item) => item.index === index);
+      state.dataset.editingPromptIndex = index;
+      state.dataset.editingPromptText = pair?.prompt?.text || "";
+      state.dataset.promptSaving = false;
+      renderDatasetViewer(datasetName);
+      return;
+    }
+    if (button.dataset.action === "cancel-prompt") {
+      state.dataset.editingPromptIndex = null;
+      state.dataset.editingPromptText = "";
+      state.dataset.promptSaving = false;
+      renderDatasetViewer(datasetName);
+      return;
+    }
+    if (button.dataset.action === "save-prompt") {
+      if (state.dataset.promptSaving) {
+        return;
+      }
+      state.dataset.promptSaving = true;
+      button.disabled = true;
+      const originalText = button.textContent;
+      button.textContent = "保存中...";
+      const payload = {
+        text: state.dataset.editingPromptText || "",
+      };
+      fetchJSON(`/api/datasets/${encodeURIComponent(datasetName)}/pair/${index}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+        .then((data) => {
+          const pair = state.dataset.datasetPairs.find((item) => item.index === index);
+          if (pair) {
+            if (data.prompt) {
+              pair.prompt = data.prompt;
+            } else {
+              delete pair.prompt;
+            }
+          }
+          showToast(payload.text.trim() ? "提示词已更新" : "提示词已删除");
+          state.dataset.editingPromptIndex = null;
+          state.dataset.editingPromptText = "";
+        })
+        .catch((error) => {
+          showToast(`保存失败：${error.message}`);
+        })
+        .finally(() => {
+          state.dataset.promptSaving = false;
+          renderDatasetViewer(datasetName);
+        });
     }
   });
 
@@ -2520,6 +2990,8 @@ function setupEventListeners() {
   refs.overlay.addEventListener("click", () => {
     closeMediaModal();
     closeResultsModal();
+    closeDatasetWorkflowModal();
+    closeDatasetImageModal();
   });
 
   refs.previewClose?.addEventListener("click", () => {
@@ -2530,6 +3002,8 @@ function setupEventListeners() {
     button.addEventListener("click", () => {
       closeMediaModal();
       closeResultsModal();
+      closeDatasetWorkflowModal();
+      closeDatasetImageModal();
     });
   });
 
@@ -2537,6 +3011,8 @@ function setupEventListeners() {
     if (event.key === "Escape") {
       closeMediaModal();
       closeResultsModal();
+      closeDatasetWorkflowModal();
+      closeDatasetImageModal();
     }
   });
 

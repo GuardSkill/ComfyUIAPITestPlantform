@@ -91,6 +91,10 @@ class DatasetRunRequest(BaseModel):
     dataset_prompt: Optional[str] = None
 
 
+class DatasetPromptUpdate(BaseModel):
+    text: Optional[str] = Field(None, description="更新后的提示词内容，留空则删除")
+
+
 class RunBatchPayload(BaseModel):
     group_id: str = Field(..., description="工作流分组标识")
     workflow_ids: List[str] = Field(..., description="要批量执行的工作流id列表")
@@ -307,6 +311,15 @@ def create_app() -> FastAPI:
         dataset_manager.remove_pair(_sanitize_for_fs(dataset_name), index)
         return {"status": "ok"}
 
+    @app.post("/api/datasets/{dataset_name}/pair/{index}/prompt")
+    async def update_dataset_pair_prompt(dataset_name: str, index: int, payload: DatasetPromptUpdate) -> Dict[str, object]:
+        safe_name = _sanitize_for_fs(dataset_name)
+        try:
+            prompt_info = dataset_manager.update_prompt_annotation(safe_name, index, payload.text or "")
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return {"status": "ok", "prompt": prompt_info}
+
     @app.post("/api/datasets/run", status_code=status.HTTP_202_ACCEPTED)
     async def run_dataset(payload: DatasetRunRequest, background_tasks: BackgroundTasks) -> Dict[str, object]:
         dataset_name_raw = (payload.dataset_name or "").strip()
@@ -350,7 +363,16 @@ def create_app() -> FastAPI:
         workflows: List[Dict[str, object]] = []
         for info in store.list_workflows():
             placeholders: List[Dict[str, object]] = []
+            auto_placeholders: List[Dict[str, str]] = []
             for placeholder in info.placeholders:
+                if placeholder.default_value is not None:
+                    auto_placeholders.append(
+                        {
+                            "name": placeholder.name,
+                            "value": placeholder.default_value,
+                        }
+                    )
+                    continue
                 normalized = normalize_placeholder_key(placeholder.name)
                 if not normalized.strip("{}").lower().startswith("input"):
                     continue
@@ -379,6 +401,7 @@ def create_app() -> FastAPI:
                     "path": str(info.path),
                     "placeholders": placeholders,
                     "prompt_fields": prompt_fields,
+                    "auto_placeholders": auto_placeholders,
                 }
             )
         return {"workflows": workflows}
@@ -525,13 +548,26 @@ def execute_job(
                 raise RuntimeError(f"工作流 {identifier} 不存在或已被删除")
             case_inputs: Dict[str, Dict[str, str]] = {}
             for placeholder in info.placeholders:
+                if placeholder.default_value is not None:
+                    case_inputs[placeholder.name] = {"upload": False, "name": placeholder.default_value}
+                    continue
                 remote_name = uploaded_names.get(placeholder.name)
                 if not remote_name:
                     raise RuntimeError(f"占位符 {placeholder.name} 缺少已上传的资源")
                 case_inputs[placeholder.name] = {"upload": False, "name": remote_name, "path": remote_name}
             case = WorkflowTestCase(name=info.name, workflow_path=info.path, inputs=case_inputs)
             cases.append(case)
-        tester.run_all(cases)
+        total = len(cases)
+        for index, case in enumerate(cases, start=1):
+            job_manager.append_log(job_id, f"开始执行第 {index}/{total} 个工作流：{case.name}")
+            result = tester.run_case(case)
+            if result.get("status") == "success":
+                job_manager.append_log(job_id, f"完成第 {index}/{total} 个工作流：{case.name}")
+            else:
+                job_manager.append_log(
+                    job_id,
+                    f"第 {index}/{total} 个工作流失败：{case.name} -> {result.get('error', '未知错误')}",
+                )
         job_manager.mark_finished(job_id, tester.results)
         job_manager.append_log(job_id, "任务执行完成")
     except Exception as exc:  # pylint: disable=broad-except
@@ -627,6 +663,11 @@ def execute_dataset_run(
                 uploaded_name = client.upload_file(saved_control)
                 for alias in placeholder_aliases(placeholder):
                     remote_mapping[alias] = uploaded_name
+            for placeholder in workflow_info.placeholders:
+                if placeholder.default_value is None:
+                    continue
+                for alias in placeholder_aliases(placeholder.name):
+                    remote_mapping.setdefault(alias, placeholder.default_value)
 
             with workflow_info.path.open("r", encoding="utf-8") as handle:
                 workflow_data = json.load(handle)
@@ -733,11 +774,19 @@ def serialize_workflow(workflow: WorkflowInfo) -> Dict[str, object]:
             }
             for field in workflow.prompt_fields
         ],
+        "auto_placeholders": [
+            {"name": placeholder.name, "value": placeholder.default_value}
+            for placeholder in workflow.placeholders
+            if placeholder.default_value is not None
+        ],
     }
 
 
 def serialize_placeholder(placeholder: PlaceholderInfo) -> Dict[str, str]:
-    return {"name": placeholder.name, "type": placeholder.media_type}
+    payload: Dict[str, str] = {"name": placeholder.name, "type": placeholder.media_type}
+    if placeholder.default_value is not None:
+        payload["default_value"] = placeholder.default_value
+    return payload
 
 
 def serialize_media(entry: MediaEntry) -> Dict[str, object]:

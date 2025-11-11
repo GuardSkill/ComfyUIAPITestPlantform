@@ -82,9 +82,13 @@
           <div class="dataset-form-row">
             <label>
               工作流
-              <select id="dataset-workflow">
-                <option value="">请选择需要批量运行的工作流</option>
-              </select>
+              <div class="dataset-workflow-picker">
+                <input id="dataset-workflow-display" type="text" placeholder="请选择需要批量运行的工作流" readonly>
+                <div class="dataset-workflow-actions">
+                  <button id="dataset-workflow-open" type="button">选择</button>
+                  <button id="dataset-workflow-refresh" type="button">刷新</button>
+                </div>
+              </div>
             </label>
             <label>
               数据集名称
@@ -206,6 +210,23 @@
 
   <div id="overlay" class="modal-overlay hidden"></div>
 
+  <div id="dataset-workflow-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <div class="modal-title">
+        <h3>选择工作流</h3>
+        <p class="modal-subtitle">请选择一个工作流用于数据集制作</p>
+      </div>
+      <button type="button" class="modal-close" data-modal-close>&times;</button>
+    </div>
+    <div class="modal-body dataset-workflow-modal-body">
+      <div id="dataset-workflow-tree" class="dataset-workflow-tree"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="dataset-workflow-cancel" type="button">取消</button>
+      <button id="dataset-workflow-confirm" type="button" class="primary">确定</button>
+    </div>
+  </div>
+
   <div id="media-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-header">
       <div class="modal-title">
@@ -231,6 +252,14 @@
     </div>
     <div class="modal-body results-modal-body">
       <div id="results-modal-content"></div>
+    </div>
+  </div>
+
+  <div id="dataset-image-modal" class="modal hidden dataset-image-modal" role="dialog" aria-modal="true">
+    <div class="dataset-image-modal-container">
+      <button type="button" class="modal-close dataset-image-close" data-modal-close>&times;</button>
+      <div id="dataset-image-content" class="dataset-image-content"></div>
+      <p id="dataset-image-caption" class="dataset-image-caption"></p>
     </div>
   </div>
 

@@ -251,14 +251,21 @@ class BatchWorkflowTester:
     # ----------------------------------------------------------- public entry
     def run_all(self, cases: Sequence[WorkflowTestCase]) -> None:
         for case in cases:
-            LOG.info("==== Running workflow: %s ====", case.name)
-            try:
-                run_info = self._run_case(case)
-                self.results.append({"name": case.name, "status": "success", **run_info})
-                LOG.info("Workflow %s finished successfully", case.name)
-            except Exception as exc:  # pylint: disable=broad-except
-                LOG.exception("Workflow %s failed: %s", case.name, exc)
-                self.results.append({"name": case.name, "status": "failed", "error": str(exc)})
+            self.run_case(case)
+
+    def run_case(self, case: WorkflowTestCase) -> Dict[str, Any]:
+        LOG.info("==== Running workflow: %s ====", case.name)
+        try:
+            run_info = self._run_case(case)
+        except Exception as exc:  # pylint: disable=broad-except
+            LOG.exception("Workflow %s failed: %s", case.name, exc)
+            result = {"name": case.name, "status": "failed", "error": str(exc)}
+            self.results.append(result)
+            return result
+        LOG.info("Workflow %s finished successfully", case.name)
+        result = {"name": case.name, "status": "success", **run_info}
+        self.results.append(result)
+        return result
 
     # ---------------------------------------------------------- case handling
     def _run_case(self, case: WorkflowTestCase) -> Dict[str, Any]:

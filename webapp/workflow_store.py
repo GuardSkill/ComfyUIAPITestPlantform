@@ -10,6 +10,11 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 
 PlaceholderUsage = Tuple[str, Tuple[str, ...]]
 
+DEFAULT_PLACEHOLDER_VALUES: Dict[str, str] = {
+    "{input_batchsize}": "1",
+    "{input_age}": "50",
+}
+
 MEDIA_TYPE_LABELS: Dict[str, str] = {
     "image": "图像",
     "video": "视频",
@@ -20,10 +25,19 @@ MEDIA_TYPE_LABELS: Dict[str, str] = {
 }
 
 
+def _normalize_placeholder(name: str) -> str:
+    stripped = str(name).strip()
+    if not stripped:
+        return ""
+    bare = stripped.strip("{}")
+    return f"{{{bare}}}" if bare else ""
+
+
 @dataclass(frozen=True)
 class PlaceholderInfo:
     name: str
     media_type: str
+    default_value: Optional[str] = None
 
 
 @dataclass
@@ -37,7 +51,13 @@ class WorkflowInfo:
 
     @property
     def input_signature(self) -> Tuple[Tuple[str, str], ...]:
-        return tuple(sorted((placeholder.name, placeholder.media_type) for placeholder in self.placeholders))
+        return tuple(
+            sorted(
+                (placeholder.name, placeholder.media_type)
+                for placeholder in self.placeholders
+                if placeholder.default_value is None
+            )
+        )
 
     @property
     def output_signature(self) -> Tuple[str, ...]:
@@ -155,7 +175,11 @@ class WorkflowStore:
 
         placeholders = self._collect_placeholders(workflow)
         placeholder_infos = [
-            PlaceholderInfo(name=name, media_type=self._infer_media_type(name, usages))
+            PlaceholderInfo(
+                name=name,
+                media_type=self._infer_media_type(name, usages),
+                default_value=DEFAULT_PLACEHOLDER_VALUES.get(name),
+            )
             for name, usages in sorted(placeholders.items())
         ]
         output_types = sorted(self._infer_output_types(workflow))
@@ -185,7 +209,7 @@ class WorkflowStore:
                     if not match:
                         continue
                     placeholder = match.group(1)
-                    normalized = f"{{{placeholder}}}"
+                    normalized = _normalize_placeholder(placeholder)
                     collected.setdefault(normalized, []).append((class_type, path_keys))
         return collected
 

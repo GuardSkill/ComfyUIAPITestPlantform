@@ -162,6 +162,22 @@ class DatasetManager:
         dest.write_text(text, encoding="utf-8")
         return dest
 
+    def update_prompt_annotation(self, dataset_name: str, index: int, text: str) -> Optional[Dict[str, str]]:
+        dataset_dir = self.root / dataset_name
+        if not dataset_dir.exists():
+            raise FileNotFoundError("未找到数据集")
+        target_dir = dataset_dir / "target"
+        if not target_dir.exists():
+            raise FileNotFoundError("数据集缺少目标目录")
+        alias = f"{index:07d}"
+        path = target_dir / f"{alias}.txt"
+        normalized = (text or "").strip("\ufeff")
+        if not normalized.strip():
+            path.unlink(missing_ok=True)
+            return None
+        path.write_text(normalized, encoding="utf-8")
+        return self._read_prompt_annotation(target_dir, index)
+
     def collect_pairs(self, dataset_name: str) -> List[Dict[str, object]]:
         dataset_dir = self.root / dataset_name
         if not dataset_dir.exists():
