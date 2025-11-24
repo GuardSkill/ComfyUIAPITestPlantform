@@ -89,9 +89,7 @@ class ComfyAPIClient:
 
     @staticmethod
     def _guess_upload_type(path: Path) -> str:
-        suffix = path.suffix.lower()
-        if suffix in VIDEO_EXTENSIONS:
-            return "video"
+        # ComfyUI统一使用 /upload/image 接口上传所有类型的文件（图片、视频、音频等）
         return "image"
 
     # --------------------------------------------------------------- execution

@@ -44,10 +44,11 @@ from .workflow_store import PlaceholderInfo, WorkflowGroup, WorkflowInfo, Workfl
 LOG = logging.getLogger("webapp")
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a"}
+# ComfyUI统一使用 /upload/image 接口上传所有类型的文件（图片、视频、音频等）
 UPLOAD_ENDPOINTS = {
     "image": "/upload/image",
-    "video": "/upload/video",
-    "audio": "/upload/audio",
+    "video": "/upload/image",  # ComfyUI没有单独的video端点
+    "audio": "/upload/image",  # ComfyUI没有单独的audio端点
     "file": "/upload/image",
 }
 
