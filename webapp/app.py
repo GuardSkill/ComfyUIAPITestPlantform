@@ -624,7 +624,12 @@ def execute_dataset_run(
         normalized_order or ["input_image"],
         existing_control_map,
     )
-    target_dir = structure["target"]
+    # 获取 target 目录：兼容新旧命名规则
+    # 旧格式：target
+    # 新格式：{dataset_name}_target
+    target_dir = structure.get("target") or next((v for k, v in structure.items() if k.endswith("_target")), None)
+    if target_dir is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="未找到输出目录")
     server_url = normalize_server_url(options.server_url or DEFAULT_SERVER_URL)
     client = ComfyAPIClient(server_url)
 

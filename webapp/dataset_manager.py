@@ -97,11 +97,15 @@ class DatasetManager:
         existing_slots: Optional[Dict[str, str]] = None,
     ) -> tuple[Dict[str, Path], Dict[str, str], int]:
         dataset_dir = self.ensure_dataset_dir(dataset_name)
-        target_dir = dataset_dir / "target"
+        # 使用新的命名规则：{dataset_name}_target
+        target_slot_name = f"{dataset_name}_target"
+        target_dir = dataset_dir / target_slot_name
         target_dir.mkdir(parents=True, exist_ok=True)
-        mapping: Dict[str, Path] = {"target": target_dir}
+        mapping: Dict[str, Path] = {target_slot_name: target_dir}
         control_slots: Dict[str, str] = {}
         assigned = set()
+
+        # 处理已存在的数据集结构（兼容旧格式）
         if existing_slots:
             for placeholder, slot_name in existing_slots.items():
                 control_slots[placeholder] = slot_name
@@ -109,25 +113,21 @@ class DatasetManager:
                 control_dir.mkdir(parents=True, exist_ok=True)
                 mapping[slot_name] = control_dir
                 assigned.add(placeholder)
-        if len(slots) <= 1 and not control_slots:
-            slot_name = "control"
+
+        # 为新占位符分配文件夹
+        # 统一使用 {dataset_name}_control1, {dataset_name}_control2, ... 命名
+        for idx, placeholder in enumerate(slots, start=1):
+            if placeholder in control_slots:
+                continue
+            slot_name = f"{dataset_name}_control{idx}"
+            while slot_name in mapping:
+                idx += 1
+                slot_name = f"{dataset_name}_control{idx}"
             control_dir = dataset_dir / slot_name
             control_dir.mkdir(parents=True, exist_ok=True)
+            control_slots[placeholder] = slot_name
             mapping[slot_name] = control_dir
-            if slots:
-                control_slots[slots[0]] = slot_name
-        else:
-            for idx, placeholder in enumerate(slots, start=1):
-                if placeholder in control_slots:
-                    continue
-                slot_name = f"control{idx}"
-                while slot_name in mapping:
-                    idx += 1
-                    slot_name = f"control{idx}"
-                control_dir = dataset_dir / slot_name
-                control_dir.mkdir(parents=True, exist_ok=True)
-                control_slots[placeholder] = slot_name
-                mapping[slot_name] = control_dir
+
         existing_indices = self._collect_existing_indices(dataset_dir)
         last_index = max(existing_indices) if existing_indices else 0
         return mapping, control_slots, last_index
@@ -166,7 +166,12 @@ class DatasetManager:
         dataset_dir = self.root / dataset_name
         if not dataset_dir.exists():
             raise FileNotFoundError("未找到数据集")
+        # 查找 target 目录：兼容新旧命名规则
+        # 旧格式：target
+        # 新格式：{dataset_name}_target
         target_dir = dataset_dir / "target"
+        if not target_dir.exists():
+            target_dir = dataset_dir / f"{dataset_name}_target"
         if not target_dir.exists():
             raise FileNotFoundError("数据集缺少目标目录")
         alias = f"{index:07d}"
@@ -183,7 +188,12 @@ class DatasetManager:
         if not dataset_dir.exists():
             raise FileNotFoundError("未找到数据集")
         controls = self._collect_control_dirs(dataset_dir)
+        # 查找 target 目录：兼容新旧命名规则
+        # 旧格式：target
+        # 新格式：{dataset_name}_target
         target_dir = dataset_dir / "target"
+        if not target_dir.exists():
+            target_dir = dataset_dir / f"{dataset_name}_target"
         target_files = self._list_indexed_files(target_dir)
         indices = sorted({*target_files.keys(), *controls.get("combined_indices", set())})
         results: List[Dict[str, object]] = []
@@ -209,7 +219,12 @@ class DatasetManager:
         for entry in dataset_dir.iterdir():
             if not entry.is_dir():
                 continue
-            if entry.name != "target" and not entry.name.startswith("control"):
+            # 兼容新旧命名规则：
+            # 旧格式：target, control, control1, control2
+            # 新格式：{dataset_name}_target, {dataset_name}_control1, {dataset_name}_control2
+            is_target = entry.name == "target" or entry.name.endswith("_target")
+            is_control = entry.name.startswith("control") or "control" in entry.name.lower()
+            if not (is_target or is_control):
                 continue
             for path in entry.glob(f"{prefix}*"):
                 path.unlink(missing_ok=True)
@@ -228,7 +243,13 @@ class DatasetManager:
         slots: Dict[str, Dict[int, Dict[str, str]]] = {}
         indices: set[int] = set()
         for entry in dataset_dir.iterdir():
-            if not entry.is_dir() or not entry.name.startswith("control"):
+            if not entry.is_dir():
+                continue
+            # 兼容新旧命名规则：
+            # 旧格式：control, control1, control2
+            # 新格式：{dataset_name}_control1, {dataset_name}_control2
+            # 判断是否为 control 文件夹：包含 "control" 且不以 "target" 结尾
+            if "control" not in entry.name.lower() or entry.name.endswith("target"):
                 continue
             slot_name = entry.name
             slot_files = self._list_indexed_files(entry)
@@ -241,7 +262,12 @@ class DatasetManager:
         for entry in dataset_dir.iterdir():
             if not entry.is_dir():
                 continue
-            if entry.name != "target" and not entry.name.startswith("control"):
+            # 兼容新旧命名规则：
+            # 旧格式：target, control, control1, control2
+            # 新格式：{dataset_name}_target, {dataset_name}_control1, {dataset_name}_control2
+            is_target = entry.name == "target" or entry.name.endswith("_target")
+            is_control = entry.name.startswith("control") or "control" in entry.name.lower()
+            if not (is_target or is_control):
                 continue
             for file in entry.iterdir():
                 if not file.is_file():
