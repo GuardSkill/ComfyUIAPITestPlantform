@@ -177,12 +177,14 @@ class WorkflowStore:
         # 自定义排序：优先按照 _l, _r, _a 后缀顺序，然后按字母顺序
         def placeholder_sort_key(item: tuple[str, Any]) -> tuple[int, str]:
             name = item[0]
+            # 去掉大括号后检查后缀
+            bare_name = name.strip("{}")
             # 定义优先级顺序
-            if name.endswith("_l"):
+            if bare_name.endswith("_l"):
                 return (0, name)
-            elif name.endswith("_r"):
+            elif bare_name.endswith("_r"):
                 return (1, name)
-            elif name.endswith("_a"):
+            elif bare_name.endswith("_a"):
                 return (2, name)
             else:
                 return (3, name)  # 其他占位符按字母顺序排在后面
