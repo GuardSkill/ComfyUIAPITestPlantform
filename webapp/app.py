@@ -4,6 +4,9 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -301,6 +304,43 @@ def create_app() -> FastAPI:
                 "controls": metadata.get("control_slots", {}),
             },
         }
+
+    @app.get("/api/datasets/{dataset_name}/download")
+    async def download_dataset(dataset_name: str) -> FileResponse:
+        """打包并下载数据集"""
+        safe_name = _sanitize_for_fs(dataset_name)
+        dataset_dir = DATASET_ROOT / safe_name
+
+        if not dataset_dir.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
+
+        # 创建临时ZIP文件
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            zip_path = temp_dir / f"{safe_name}.zip"
+
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # 遍历数据集目录下的所有文件
+                for file_path in dataset_dir.rglob('*'):
+                    if file_path.is_file():
+                        # 计算相对路径
+                        arcname = file_path.relative_to(dataset_dir.parent)
+                        zipf.write(file_path, arcname)
+
+            # 返回ZIP文件
+            return FileResponse(
+                path=str(zip_path),
+                filename=f"{safe_name}.zip",
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{safe_name}.zip"'
+                }
+            )
+        except Exception as exc:
+            # 清理临时文件
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            LOG.exception("打包数据集失败: %s", exc)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"打包失败: {str(exc)}")
 
     @app.delete("/api/datasets/{dataset_name}")
     async def delete_dataset(dataset_name: str) -> Dict[str, object]:

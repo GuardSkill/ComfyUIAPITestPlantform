@@ -1553,6 +1553,12 @@ function renderDatasetList() {
     viewBtn.dataset.action = "view";
     viewBtn.dataset.name = dataset.name;
     actions.appendChild(viewBtn);
+    const downloadBtn = document.createElement("button");
+    downloadBtn.type = "button";
+    downloadBtn.textContent = "下载";
+    downloadBtn.dataset.action = "download";
+    downloadBtn.dataset.name = dataset.name;
+    actions.appendChild(downloadBtn);
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
     deleteBtn.textContent = "删除";
@@ -1925,6 +1931,21 @@ function closeDatasetImageModal() {
     refs.datasetImageCaption.textContent = "";
   }
   updateOverlayVisibility();
+}
+
+function downloadDataset(name) {
+  try {
+    const url = `/api/datasets/${encodeURIComponent(name)}/download`;
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${name}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast(`正在下载数据集 ${name}...`);
+  } catch (error) {
+    showToast(`下载失败：${error.message}`);
+  }
 }
 
 async function deleteDataset(name) {
@@ -2857,6 +2878,8 @@ function setupEventListeners() {
     }
     if (button.dataset.action === "view") {
       viewDataset(datasetName);
+    } else if (button.dataset.action === "download") {
+      downloadDataset(datasetName);
     } else if (button.dataset.action === "delete") {
       deleteDataset(datasetName);
     }

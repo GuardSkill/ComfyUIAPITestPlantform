@@ -174,13 +174,26 @@ class WorkflowStore:
             return None
 
         placeholders = self._collect_placeholders(workflow)
+        # 自定义排序：优先按照 _l, _r, _a 后缀顺序，然后按字母顺序
+        def placeholder_sort_key(item: tuple[str, Any]) -> tuple[int, str]:
+            name = item[0]
+            # 定义优先级顺序
+            if name.endswith("_l"):
+                return (0, name)
+            elif name.endswith("_r"):
+                return (1, name)
+            elif name.endswith("_a"):
+                return (2, name)
+            else:
+                return (3, name)  # 其他占位符按字母顺序排在后面
+
         placeholder_infos = [
             PlaceholderInfo(
                 name=name,
                 media_type=self._infer_media_type(name, usages),
                 default_value=DEFAULT_PLACEHOLDER_VALUES.get(name),
             )
-            for name, usages in sorted(placeholders.items())
+            for name, usages in sorted(placeholders.items(), key=placeholder_sort_key)
         ]
         output_types = sorted(self._infer_output_types(workflow))
         prompt_fields = self._collect_prompt_fields(workflow)
