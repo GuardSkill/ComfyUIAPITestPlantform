@@ -1354,3 +1354,28 @@ button[disabled] {
     width: 94vw;
   }
 }
+
+/* 文件夹选择器样式 */
+.folder-option {
+  padding: 10px;
+  border-bottom: 1px solid #e1e4e8;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.folder-option:hover {
+  background-color: #f6f8fa;
+}
+
+.folder-option input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.folder-option label {
+  cursor: pointer;
+  flex: 1;
+  font-size: 14px;
+}

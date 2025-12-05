@@ -455,6 +455,57 @@ def create_app() -> FastAPI:
         files = media_manager.list_all_files(normalized or None)
         return {"files": [serialize_media(entry) for entry in files]}
 
+    @app.get("/api/media/folder-contents")
+    async def get_folder_contents(folder_path: str = "", media_type: str = "") -> Dict[str, object]:
+        """获取指定文件夹内的所有媒体文件（递归）"""
+        try:
+            # 解析文件夹路径
+            if folder_path:
+                target_path = media_manager.resolve_path(folder_path)
+                if not target_path.is_dir():
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不是文件夹")
+            else:
+                target_path = MEDIA_ROOT
+
+            # 收集该文件夹下所有媒体文件
+            files = []
+            normalized_type = media_type.strip().lower() if media_type else None
+
+            for entry_path in target_path.rglob('*'):
+                if not entry_path.is_file():
+                    continue
+
+                # 检测媒体类型
+                from .media_manager import detect_media_type
+                file_type = detect_media_type(entry_path)
+
+                # 类型过滤
+                if normalized_type and file_type != normalized_type:
+                    continue
+
+                # 构建相对路径
+                relative_path = entry_path.relative_to(MEDIA_ROOT)
+                files.append({
+                    "name": entry_path.name,
+                    "path": str(relative_path).replace("\\", "/"),
+                    "media_type": file_type,
+                    "is_dir": False,
+                })
+
+            # 按路径排序
+            files.sort(key=lambda x: x["path"])
+
+            return {
+                "folder": folder_path,
+                "files": files,
+                "count": len(files)
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except Exception as exc:
+            LOG.exception("获取文件夹内容失败: %s", exc)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
     # ----------------------------------------------------------------- job API
     @app.get("/api/jobs")
     async def list_jobs() -> Dict[str, object]:

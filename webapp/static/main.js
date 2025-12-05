@@ -1015,12 +1015,20 @@ function renderDatasetPlaceholderList() {
     actions.className = "dataset-placeholder-actions";
     const selectBtn = document.createElement("button");
     selectBtn.type = "button";
-    selectBtn.textContent = "选择素材";
+    selectBtn.textContent = "选择文件";
     selectBtn.dataset.action = "select";
     selectBtn.dataset.placeholder = key;
     selectBtn.dataset.type = placeholder.type || "";
     selectBtn.dataset.display = placeholder.display || placeholder.name;
     actions.appendChild(selectBtn);
+    const selectFolderBtn = document.createElement("button");
+    selectFolderBtn.type = "button";
+    selectFolderBtn.textContent = "选择文件夹";
+    selectFolderBtn.dataset.action = "select-folder";
+    selectFolderBtn.dataset.placeholder = key;
+    selectFolderBtn.dataset.type = placeholder.type || "";
+    selectFolderBtn.dataset.display = placeholder.display || placeholder.name;
+    actions.appendChild(selectFolderBtn);
     const clearBtn = document.createElement("button");
     clearBtn.type = "button";
     clearBtn.textContent = "清空";
@@ -1931,6 +1939,151 @@ function closeDatasetImageModal() {
     refs.datasetImageCaption.textContent = "";
   }
   updateOverlayVisibility();
+}
+
+async function openFolderSelectorModal(placeholderName, placeholderType) {
+  const folders = await loadMediaFolders();
+  if (!folders || !folders.length) {
+    alert("没有找到媒体文件夹");
+    return;
+  }
+
+  const folderListHtml = folders
+    .map(
+      (folder) =>
+        `<div class="folder-option" data-path="${folder.path}">
+          <input type="checkbox" id="folder-${folder.path.replace(/[^a-zA-Z0-9]/g, '_')}" value="${folder.path}">
+          <label for="folder-${folder.path.replace(/[^a-zA-Z0-9]/g, '_')}">${folder.path || '(根目录)'} (${folder.count} 个文件)</label>
+        </div>`
+    )
+    .join("");
+
+  const modalHtml = `
+    <div class="modal" id="folder-selector-modal" style="display: block;">
+      <div class="modal-content" style="max-width: 600px;">
+        <h2>选择文件夹</h2>
+        <p>为占位符 ${placeholderName} 选择一个或多个文件夹</p>
+        <div style="max-height: 400px; overflow-y: auto; margin: 20px 0;">
+          ${folderListHtml}
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="confirm-folder-selection">确定</button>
+          <button type="button" id="cancel-folder-selection">取消</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = modalHtml;
+  const modal = tempDiv.firstElementChild;
+  document.body.appendChild(modal);
+
+  const confirmBtn = modal.querySelector("#confirm-folder-selection");
+  const cancelBtn = modal.querySelector("#cancel-folder-selection");
+
+  confirmBtn.addEventListener("click", async () => {
+    const checkedInputs = modal.querySelectorAll('input[type="checkbox"]:checked');
+    const selectedFolders = Array.from(checkedInputs).map((input) => input.value);
+
+    if (selectedFolders.length === 0) {
+      alert("请至少选择一个文件夹");
+      return;
+    }
+
+    // 获取所有选择的文件夹中的文件
+    const allFiles = [];
+    for (const folderPath of selectedFolders) {
+      try {
+        const data = await fetchJSON(
+          `/api/media/folder-contents?folder_path=${encodeURIComponent(folderPath)}&media_type=${placeholderType || ""}`
+        );
+        if (data.files && data.files.length > 0) {
+          allFiles.push(...data.files);
+        }
+      } catch (error) {
+        showToast(`读取文件夹 ${folderPath} 失败：${error.message}`);
+      }
+    }
+
+    if (allFiles.length === 0) {
+      alert("选择的文件夹中没有找到相应类型的文件");
+      modal.remove();
+      return;
+    }
+
+    // 添加到占位符选择列表
+    const key = normalizePlaceholderKey(placeholderName);
+    const existingSelections = state.dataset.placeholderSelections[key] || [];
+    const newSelections = allFiles.map((file) => ({
+      name: file.name,
+      path: file.path,
+      media_type: file.media_type,
+      url: `/media/${file.path}`,
+    }));
+
+    state.dataset.placeholderSelections[key] = [...existingSelections, ...newSelections];
+    renderDatasetPlaceholderList();
+    updateDatasetRunButton();
+    showToast(`已添加 ${allFiles.length} 个文件`);
+
+    modal.remove();
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    modal.remove();
+  });
+}
+
+async function loadMediaFolders() {
+  try {
+    const { files } = await fetchJSON("/api/media");
+    const folders = [];
+    const folderSet = new Set();
+
+    // 收集所有文件夹路径
+    files.forEach((entry) => {
+      if (entry.is_dir) {
+        folderSet.add(entry.path);
+      } else {
+        // 从文件路径中提取父文件夹
+        const parts = entry.path.split("/");
+        if (parts.length > 1) {
+          parts.pop(); // 移除文件名
+          const folderPath = parts.join("/");
+          folderSet.add(folderPath);
+        }
+      }
+    });
+
+    // 添加根目录
+    folderSet.add("");
+
+    // 为每个文件夹统计文件数量
+    for (const folderPath of folderSet) {
+      try {
+        const data = await fetchJSON(`/api/media/folder-contents?folder_path=${encodeURIComponent(folderPath)}`);
+        folders.push({
+          path: folderPath,
+          count: data.count || 0,
+        });
+      } catch (error) {
+        console.error(`读取文件夹 ${folderPath} 失败:`, error);
+      }
+    }
+
+    // 按路径排序
+    folders.sort((a, b) => {
+      if (a.path === "") return -1;
+      if (b.path === "") return 1;
+      return a.path.localeCompare(b.path);
+    });
+
+    return folders;
+  } catch (error) {
+    showToast(`读取文件夹列表失败：${error.message}`);
+    return [];
+  }
 }
 
 function downloadDataset(name) {
@@ -2849,6 +3002,8 @@ function setupEventListeners() {
     }
     if (button.dataset.action === "select") {
       openMediaModal(placeholder, button.dataset.type || "", { mode: "dataset", multi: true });
+    } else if (button.dataset.action === "select-folder") {
+      openFolderSelectorModal(placeholder, button.dataset.type || "");
     } else if (button.dataset.action === "clear") {
       state.dataset.placeholderSelections[placeholder] = [];
       renderDatasetPlaceholderList();
