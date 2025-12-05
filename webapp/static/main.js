@@ -1942,29 +1942,19 @@ function closeDatasetImageModal() {
 }
 
 async function openFolderSelectorModal(placeholderName, placeholderType) {
-  const folders = await loadMediaFolders();
-  if (!folders || !folders.length) {
-    alert("没有找到媒体文件夹");
-    return;
-  }
-
-  const folderListHtml = folders
-    .map(
-      (folder) =>
-        `<div class="folder-option" data-path="${folder.path}">
-          <input type="checkbox" id="folder-${folder.path.replace(/[^a-zA-Z0-9]/g, '_')}" value="${folder.path}">
-          <label for="folder-${folder.path.replace(/[^a-zA-Z0-9]/g, '_')}">${folder.path || '(根目录)'} (${folder.count} 个文件)</label>
-        </div>`
-    )
-    .join("");
-
   const modalHtml = `
     <div class="modal" id="folder-selector-modal" style="display: block;">
-      <div class="modal-content" style="max-width: 600px;">
-        <h2>选择文件夹</h2>
-        <p>为占位符 ${placeholderName} 选择一个或多个文件夹</p>
-        <div style="max-height: 400px; overflow-y: auto; margin: 20px 0;">
-          ${folderListHtml}
+      <div class="modal-content" style="max-width: 800px; max-height: 80vh;">
+        <h2>选择文件/文件夹</h2>
+        <p>为占位符 ${placeholderName} 选择文件或文件夹（可多选）</p>
+        <div id="folder-breadcrumb" style="margin: 10px 0; padding: 10px; background: #f6f8fa; border-radius: 4px;">
+          <span>当前位置: </span><span id="current-path">media/</span>
+        </div>
+        <div id="folder-browser" style="max-height: 400px; overflow-y: auto; margin: 20px 0; border: 1px solid #e1e4e8; border-radius: 4px;">
+          <div style="text-align: center; padding: 40px;">加载中...</div>
+        </div>
+        <div style="margin: 10px 0; padding: 10px; background: #f0f6ff; border-radius: 4px;">
+          <strong>已选择：</strong><span id="selection-count">0</span> 项
         </div>
         <div class="modal-actions">
           <button type="button" id="confirm-folder-selection">确定</button>
@@ -1979,60 +1969,195 @@ async function openFolderSelectorModal(placeholderName, placeholderType) {
   const modal = tempDiv.firstElementChild;
   document.body.appendChild(modal);
 
+  const browserDiv = modal.querySelector("#folder-browser");
+  const currentPathSpan = modal.querySelector("#current-path");
+  const selectionCountSpan = modal.querySelector("#selection-count");
   const confirmBtn = modal.querySelector("#confirm-folder-selection");
   const cancelBtn = modal.querySelector("#cancel-folder-selection");
 
-  confirmBtn.addEventListener("click", async () => {
-    const checkedInputs = modal.querySelectorAll('input[type="checkbox"]:checked');
-    const selectedFolders = Array.from(checkedInputs).map((input) => input.value);
+  let currentPath = "";
+  const selectedItems = new Set(); // 存储选中的文件/文件夹路径
 
-    if (selectedFolders.length === 0) {
-      alert("请至少选择一个文件夹");
-      return;
+  async function loadDirectory(path) {
+    try {
+      currentPath = path;
+      currentPathSpan.textContent = `media/${path}`;
+      browserDiv.innerHTML = '<div style="text-align: center; padding: 20px;">加载中...</div>';
+
+      const data = await fetchJSON(`/api/media?path=${encodeURIComponent(path)}`);
+      renderBrowser(data);
+    } catch (error) {
+      browserDiv.innerHTML = `<div style="text-align: center; padding: 20px; color: red;">加载失败: ${error.message}</div>`;
+    }
+  }
+
+  function renderBrowser(data) {
+    browserDiv.innerHTML = "";
+
+    // 返回上级按钮
+    if (currentPath) {
+      const backBtn = document.createElement("div");
+      backBtn.className = "folder-browser-item folder-item";
+      backBtn.innerHTML = `
+        <span class="folder-icon">📁</span>
+        <span class="folder-name">..</span>
+      `;
+      backBtn.onclick = () => {
+        const parentPath = currentPath.split("/").slice(0, -1).join("/");
+        loadDirectory(parentPath);
+      };
+      browserDiv.appendChild(backBtn);
     }
 
-    // 获取所有选择的文件夹中的文件
-    const allFiles = [];
-    for (const folderPath of selectedFolders) {
-      try {
-        const data = await fetchJSON(
-          `/api/media/folder-contents?folder_path=${encodeURIComponent(folderPath)}&media_type=${placeholderType || ""}`
-        );
-        if (data.files && data.files.length > 0) {
-          allFiles.push(...data.files);
+    // 渲染文件夹
+    data.directories.forEach((dir) => {
+      const isSelected = selectedItems.has(dir.path);
+      const item = document.createElement("div");
+      item.className = "folder-browser-item folder-item" + (isSelected ? " selected" : "");
+      item.innerHTML = `
+        <input type="checkbox" class="item-checkbox" data-path="${dir.path}" data-type="folder" ${isSelected ? "checked" : ""}>
+        <span class="folder-icon">📁</span>
+        <span class="folder-name">${dir.name}</span>
+      `;
+
+      const checkbox = item.querySelector(".item-checkbox");
+      checkbox.onclick = (e) => {
+        e.stopPropagation();
+        toggleSelection(dir.path, checkbox.checked);
+      };
+
+      const nameSpan = item.querySelector(".folder-name");
+      nameSpan.onclick = () => {
+        loadDirectory(dir.path);
+      };
+
+      browserDiv.appendChild(item);
+    });
+
+    // 渲染文件（根据类型过滤）
+    data.files
+      .filter((file) => !placeholderType || file.media_type === placeholderType)
+      .forEach((file) => {
+        const isSelected = selectedItems.has(file.path);
+        const item = document.createElement("div");
+        item.className = "folder-browser-item file-item" + (isSelected ? " selected" : "");
+
+        const icon = file.media_type === "image" ? "🖼️" : file.media_type === "video" ? "🎬" : "📄";
+        item.innerHTML = `
+          <input type="checkbox" class="item-checkbox" data-path="${file.path}" data-type="file" ${isSelected ? "checked" : ""}>
+          <span class="file-icon">${icon}</span>
+          <span class="file-name">${file.name}</span>
+        `;
+
+        const checkbox = item.querySelector(".item-checkbox");
+        checkbox.onclick = (e) => {
+          e.stopPropagation();
+          toggleSelection(file.path, checkbox.checked);
+        };
+
+        item.querySelector(".file-name").onclick = () => {
+          checkbox.checked = !checkbox.checked;
+          toggleSelection(file.path, checkbox.checked);
+        };
+
+        browserDiv.appendChild(item);
+      });
+  }
+
+  function toggleSelection(path, isChecked) {
+    if (isChecked) {
+      selectedItems.add(path);
+    } else {
+      selectedItems.delete(path);
+    }
+    selectionCountSpan.textContent = selectedItems.size;
+    updateItemStyles();
+  }
+
+  function updateItemStyles() {
+    browserDiv.querySelectorAll(".folder-browser-item").forEach((item) => {
+      const checkbox = item.querySelector(".item-checkbox");
+      if (checkbox) {
+        const path = checkbox.dataset.path;
+        if (selectedItems.has(path)) {
+          item.classList.add("selected");
+        } else {
+          item.classList.remove("selected");
         }
-      } catch (error) {
-        showToast(`读取文件夹 ${folderPath} 失败：${error.message}`);
       }
-    }
+    });
+  }
 
-    if (allFiles.length === 0) {
-      alert("选择的文件夹中没有找到相应类型的文件");
-      modal.remove();
+  confirmBtn.addEventListener("click", async () => {
+    if (selectedItems.size === 0) {
+      alert("请至少选择一个文件或文件夹");
       return;
     }
 
-    // 添加到占位符选择列表
-    const key = normalizePlaceholderKey(placeholderName);
-    const existingSelections = state.dataset.placeholderSelections[key] || [];
-    const newSelections = allFiles.map((file) => ({
-      name: file.name,
-      path: file.path,
-      media_type: file.media_type,
-      url: `/media/${file.path}`,
-    }));
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "处理中...";
 
-    state.dataset.placeholderSelections[key] = [...existingSelections, ...newSelections];
-    renderDatasetPlaceholderList();
-    updateDatasetRunButton();
-    showToast(`已添加 ${allFiles.length} 个文件`);
+    try {
+      const allFiles = [];
 
-    modal.remove();
+      for (const itemPath of selectedItems) {
+        const checkbox = browserDiv.querySelector(`.item-checkbox[data-path="${itemPath}"]`);
+        const itemType = checkbox ? checkbox.dataset.type : "file";
+
+        if (itemType === "folder") {
+          // 获取文件夹中的所有文件
+          const data = await fetchJSON(
+            `/api/media/folder-contents?folder_path=${encodeURIComponent(itemPath)}&media_type=${placeholderType || ""}`
+          );
+          if (data.files && data.files.length > 0) {
+            allFiles.push(...data.files);
+          }
+        } else {
+          // 直接添加文件
+          allFiles.push({
+            name: itemPath.split("/").pop(),
+            path: itemPath,
+            media_type: placeholderType || "image",
+          });
+        }
+      }
+
+      if (allFiles.length === 0) {
+        alert("选择的项目中没有找到相应类型的文件");
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "确定";
+        return;
+      }
+
+      // 添加到占位符选择列表
+      const key = normalizePlaceholderKey(placeholderName);
+      const existingSelections = state.dataset.placeholderSelections[key] || [];
+      const newSelections = allFiles.map((file) => ({
+        name: file.name,
+        path: file.path,
+        media_type: file.media_type,
+        url: `/media/${file.path}`,
+      }));
+
+      state.dataset.placeholderSelections[key] = [...existingSelections, ...newSelections];
+      renderDatasetPlaceholderList();
+      updateDatasetRunButton();
+      showToast(`已添加 ${allFiles.length} 个文件`);
+
+      modal.remove();
+    } catch (error) {
+      alert(`处理失败: ${error.message}`);
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "确定";
+    }
   });
 
   cancelBtn.addEventListener("click", () => {
     modal.remove();
   });
+
+  // 初始加载根目录
+  loadDirectory("");
 }
 
 async function loadMediaFolders() {
